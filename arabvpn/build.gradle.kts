@@ -20,8 +20,7 @@ android {
 
     buildTypes {
         debug {
-            // x86_64 exists only to allow real emulator startup tests in CI.
-            // Phone/release builds stay ARM-only for size and efficiency.
+            // x86_64 is included only in debug so CI can boot/install the APK on an emulator.
             ndk {
                 abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
             }
@@ -50,6 +49,18 @@ android {
         buildConfig = true
     }
 
+    // AGP 9 uses built-in Kotlin. Kotlin directories must be registered on AndroidSourceSet.kotlin;
+    // java.srcDirs and kotlin.sourceSets do not feed .kt files into compileDebugKotlin anymore.
+    sourceSets {
+        getByName("main") {
+            kotlin.directories += "../app/src/main/kotlin/com/arabvpn/app"
+            kotlin.directories += "../app/src/main/kotlin/com/vibe/app/vpn"
+        }
+        getByName("test") {
+            kotlin.directories += "src/test/kotlin"
+        }
+    }
+
     packaging {
         jniLibs.useLegacyPackaging = true
         resources {
@@ -62,23 +73,6 @@ android {
     lint {
         abortOnError = true
         checkReleaseBuilds = true
-    }
-}
-
-// The standalone module intentionally reuses only the Arab VPN source directories from the old
-// repository layout. Configure Kotlin's source sets directly; Android's java.srcDirs alone does
-// not register .kt files with the Kotlin compiler on the current Gradle/Kotlin plugin versions.
-kotlin {
-    sourceSets {
-        getByName("main") {
-            kotlin.srcDirs(
-                "../app/src/main/kotlin/com/arabvpn/app",
-                "../app/src/main/kotlin/com/vibe/app/vpn",
-            )
-        }
-        getByName("test") {
-            kotlin.srcDir("src/test/kotlin")
-        }
     }
 }
 
