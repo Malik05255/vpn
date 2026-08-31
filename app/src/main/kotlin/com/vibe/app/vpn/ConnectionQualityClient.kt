@@ -1,6 +1,7 @@
 package com.vibe.app.vpn
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
 import java.net.HttpURLConnection
@@ -18,20 +19,7 @@ class ConnectionQualityClient(
     private val ipLocationClient: IpLocationClient = IpLocationClient(),
 ) {
     suspend fun verify(expectedCountry: VpnCountry): ConnectionQualityReport = withContext(Dispatchers.IO) {
-        val primary = ipLocationClient.check()
-        require(primary.countryCode.equals(expectedCountry.code, ignoreCase = true)) {
-            "عنوان الخروج ليس من ${expectedCountry.displayNameAr}. ظهر من ${primary.country.ifBlank { primary.countryCode.ifBlank { "دولة أخرى" } }}."
-        }
-
-        val secondary = readCloudflareTrace()
-        require(secondary.countryCode.equals(expectedCountry.code, ignoreCase = true)) {
-            "فشل التحقق المزدوج من الدولة: Cloudflare اكتشف ${secondary.countryCode.ifBlank { "دولة أخرى" }} بدل ${expectedCountry.code}."
-        }
-        if (primary.ip.isNotBlank() && secondary.ip.isNotBlank()) {
-            require(primary.ip == secondary.ip) {
-                "نتائج فحص عنوان IP غير متطابقة؛ تم رفض الاتصال احتياطياً."
-            }
-        }
+        val (primary, secondary) = verifyGeoWithWarmup(expectedCountry)
 
         val latencySamples = List(LATENCY_SAMPLES) { measureLatencyMs() }.sorted()
         val medianLatency = latencySamples[latencySamples.size / 2]
@@ -51,6 +39,39 @@ class ConnectionQualityClient(
             downloadMbps = downloadMbps,
             geoVerified = true,
         )
+    }
+
+    /**
+     * Android may report the old route for a short moment after the TUN starts. Treating that
+     * sub-second transition as a permanent country failure caused valid free nodes to be rejected.
+     * We retry the *real* external geo checks instead; success is still impossible unless both
+     * independent services agree with the requested country.
+     */
+    private suspend fun verifyGeoWithWarmup(expectedCountry: VpnCountry): Pair<IpLocation, TraceResult> {
+        var lastError: Throwable? = null
+        repeat(GEO_WARMUP_ATTEMPTS) { attemptIndex ->
+            val attempt = runCatching {
+                val primary = ipLocationClient.check()
+                require(primary.countryCode.equals(expectedCountry.code, ignoreCase = true)) {
+                    "عنوان الخروج ليس من ${expectedCountry.displayNameAr}. ظهر من ${primary.country.ifBlank { primary.countryCode.ifBlank { "دولة أخرى" } }}."
+                }
+
+                val secondary = readCloudflareTrace()
+                require(secondary.countryCode.equals(expectedCountry.code, ignoreCase = true)) {
+                    "فشل التحقق المزدوج من الدولة: Cloudflare اكتشف ${secondary.countryCode.ifBlank { "دولة أخرى" }} بدل ${expectedCountry.code}."
+                }
+
+                // Different destinations can legitimately be NATed through different public IPs
+                // by the same proxy pool. Country agreement is the security property we need here;
+                // exact IP equality was rejecting valid country-correct routes.
+                primary to secondary
+            }
+
+            attempt.getOrNull()?.let { return it }
+            lastError = attempt.exceptionOrNull()
+            if (attemptIndex < GEO_WARMUP_ATTEMPTS - 1) delay(GEO_WARMUP_RETRY_MS)
+        }
+        throw lastError ?: IllegalStateException("تعذر التحقق من دولة الخروج.")
     }
 
     private fun readCloudflareTrace(): TraceResult {
@@ -138,11 +159,13 @@ class ConnectionQualityClient(
     )
 
     companion object {
-        // Strict enough to reject obviously poor public relays while remaining realistic
-        // for Saudi Arabia -> North Africa / Levant routing.
-        const val MAX_MEDIAN_LATENCY_MS = 300L
-        const val MIN_DOWNLOAD_MBPS = 5.0
+        // This is a minimum usability floor for volatile public/free routes, not a premium-VPN SLA.
+        // Geography remains strict: both independent country checks must still match exactly.
+        const val MAX_MEDIAN_LATENCY_MS = 1_200L
+        const val MIN_DOWNLOAD_MBPS = 1.0
 
+        private const val GEO_WARMUP_ATTEMPTS = 4
+        private const val GEO_WARMUP_RETRY_MS = 900L
         private const val LATENCY_SAMPLES = 3
         private const val LATENCY_TIMEOUT_MS = 4_000
         private const val SPEED_TIMEOUT_MS = 12_000
