@@ -76,7 +76,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     connectionStatus = ConnectionStatus.CONNECTING,
                     errorMessage = null,
-                    noticeMessage = "جاري البحث عن أفضل مسار مجاني والتحقق من IP وDNS والسرعة…",
+                    noticeMessage = "جاري جمع واختبار المسارات والتحقق من دولة الخروج…",
                     ipLocation = null,
                     qualityReport = null,
                     engine = null,
@@ -119,8 +119,11 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                         locationTarget = activeLocation,
                         errorMessage = (locationResult as? LocationSyncResult.Failed)?.reason,
                         noticeMessage = when (locationResult) {
-                            is LocationSyncResult.Active ->
+                            is LocationSyncResult.Active -> if (report.performanceAcceptable) {
                                 "تم ضبط VPN وIP وDNS والموقع تلقائياً على ${country.displayNameAr}."
+                            } else {
+                                "تم التحقق من ${country.displayNameAr} وتشغيل VPN والموقع. جودة الخادم المجاني الحالية منخفضة وقد تتغير."
+                            }
                             LocationSyncResult.NeedsDeveloperSetup ->
                                 "VPN وIP وDNS جاهزة. بقي إعداد Android لمرة واحدة: اختر Arab VPN كتطبيق الموقع الوهمي، ثم ارجع للتطبيق وسيتم ضبط الموقع تلقائياً."
                             is LocationSyncResult.Failed ->
@@ -145,7 +148,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                         locationTarget = null,
                         noticeMessage = null,
                         errorMessage = error.message
-                            ?: "تعذر العثور على اتصال مجاني يحقق معايير الدولة والسرعة والجودة.",
+                            ?: "تعذر العثور على اتصال مجاني يثبت دولة الخروج المطلوبة.",
                         showBackgroundPrompt = false,
                     )
                 }
@@ -153,7 +156,6 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Called when the user returns from Developer Options. No extra connect press is needed. */
     fun retryLocationSyncIfNeeded() {
         val state = _uiState.value
         val country = state.selectedCountry ?: return
@@ -225,7 +227,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun initialUiState(): VpnUiState = if (SingBoxVpnService.isRunning()) {
+    private fun initialUiState(): VpnUiState = if (SingBoxVpnService.isRunning(getApplication())) {
         VpnUiState(
             connectionStatus = ConnectionStatus.CONNECTED,
             noticeMessage = "Arab VPN يعمل حالياً في الخلفية. اضغط فصل الاتصال إذا أردت إيقاف الجلسة.",
