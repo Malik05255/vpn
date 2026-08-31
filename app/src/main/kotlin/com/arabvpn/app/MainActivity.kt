@@ -12,7 +12,10 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.core.content.ContextCompat
@@ -86,6 +89,35 @@ class MainActivity : ComponentActivity() {
                         runCatching { startActivity(vpnViewModel.mockLocationSettingsIntent()) }
                     },
                 )
+
+                if (state.showBackgroundPrompt) {
+                    AlertDialog(
+                        onDismissRequest = vpnViewModel::dismissBackgroundPrompt,
+                        title = {
+                            Text("هل تريد أن أعمل في الخلفية؟")
+                        },
+                        text = {
+                            Text(
+                                "إذا اخترت نعم، سيتم إغلاق واجهة Arab VPN فقط، بينما يبقى VPN والموقع يعملان في الخلفية. يمكنك فتح التطبيق مرة أخرى في أي وقت."
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    vpnViewModel.dismissBackgroundPrompt()
+                                    finishAndRemoveTask()
+                                }
+                            ) {
+                                Text("✅ نعم")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = vpnViewModel::dismissBackgroundPrompt) {
+                                Text("❌ لا")
+                            }
+                        },
+                    )
+                }
             }
         }
     }
