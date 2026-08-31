@@ -44,11 +44,13 @@ class MockLocationController(context: Context) {
         start(CountryLocationResolver.resolve(country, ipLocation))
 
     suspend fun start(target: CountryLocation): LocationSyncResult {
+        // Always cancel an older refresh loop first. If authorization was revoked while a session
+        // was active, the stale loop must not remain alive in the background.
+        stop()
+
         if (!isAuthorized()) {
             return LocationSyncResult.NeedsDeveloperSetup
         }
-
-        stop()
 
         return runCatching {
             installProvider(LocationManager.GPS_PROVIDER)
