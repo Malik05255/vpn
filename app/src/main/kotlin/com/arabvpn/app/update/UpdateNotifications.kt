@@ -18,9 +18,6 @@ import com.vibe.app.R
 import java.io.File
 
 object UpdateNotifications {
-    // v2 intentionally uses a new channel ID. Android preserves the importance of an existing
-    // notification channel, so changing DEFAULT -> HIGH on the old ID would not upgrade devices
-    // that already created the old channel.
     private const val CHANNEL_ID = "arab_vpn_updates_v2"
     private const val AVAILABLE_ID = 8101
     private const val DOWNLOAD_ID = 8102
@@ -52,12 +49,10 @@ object UpdateNotifications {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val downloadIntent = PendingIntent.getBroadcast(
+        val updateIntent = PendingIntent.getActivity(
             context,
             manifest.versionCode,
-            Intent(context, UpdateDownloadReceiver::class.java).apply {
-                action = UpdateDownloadReceiver.ACTION_DOWNLOAD_UPDATE
-            },
+            UpdateInstallActivity.downloadAndInstallIntent(context),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
@@ -67,11 +62,11 @@ object UpdateNotifications {
             .setContentText("الإصدار ${manifest.versionName} جاهز. اضغط للتحديث الآن.")
             .setStyle(
                 NotificationCompat.BigTextStyle().bigText(
-                    "يتوفر إصدار جديد ${manifest.versionName}. افتح Arab VPN أو اضغط «تحديث الآن» لبدء تنزيل التحديث."
+                    "يتوفر إصدار جديد ${manifest.versionName}. اضغط «تحديث الآن»؛ سيُنزل التطبيق التحديث ثم يفتح مثبت Android تلقائياً."
                 )
             )
             .setContentIntent(openIntent)
-            .addAction(0, "تحديث الآن", downloadIntent)
+            .addAction(0, "تحديث الآن", updateIntent)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setAutoCancel(true)
@@ -130,10 +125,17 @@ object UpdateNotifications {
     fun showFailure(context: Context, message: String) {
         createChannel(context)
         if (!canPostNotifications(context)) return
+        val signatureMismatch = message.contains("توقيع", ignoreCase = true)
+        val text = if (signatureMismatch) {
+            "نسخة الاختبار الحالية موقعة بمفتاح قديم. احذف Arab VPN وثبّت النسخة الجديدة مرة واحدة؛ بعدها تعمل التحديثات مباشرة."
+        } else {
+            message
+        }
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_arab_vpn)
-            .setContentTitle("تعذر تحديث Arab VPN")
-            .setContentText(message)
+            .setContentTitle(if (signatureMismatch) "يلزم تثبيت يدوي مرة واحدة" else "تعذر تحديث Arab VPN")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .build()
