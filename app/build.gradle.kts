@@ -162,6 +162,10 @@ dependencies {
     // HTML parsing (web search)
     implementation(libs.jsoup)
 
+    // WireGuard userspace VPN backend. The actual country server credentials are imported
+    // at runtime and kept in app-private storage rather than committed to the repository.
+    implementation("com.wireguard.android:tunnel:1.0.20260102")
+
     // Hidden API bypass — lets plugin inspector reflect WindowManagerGlobal.getRootViews()
     // so that dialogs / popup menus / bottom sheets are visible to the agent on API 30+.
     implementation("org.lsposed.hiddenapibypass:hiddenapibypass:4.3")
