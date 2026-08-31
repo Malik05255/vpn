@@ -14,7 +14,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private val automaticVpn = AutomaticVpnManager(application)
     private val mockLocation = MockLocationController(application)
 
-    private val _uiState = MutableStateFlow(VpnUiState())
+    private val _uiState = MutableStateFlow(initialUiState())
     val uiState: StateFlow<VpnUiState> = _uiState.asStateFlow()
 
     fun selectCountry(country: VpnCountry) {
@@ -223,6 +223,15 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
+    }
+
+    private fun initialUiState(): VpnUiState = if (SingBoxVpnService.isRunning()) {
+        VpnUiState(
+            connectionStatus = ConnectionStatus.CONNECTED,
+            noticeMessage = "Arab VPN يعمل حالياً في الخلفية. اضغط فصل الاتصال إذا أردت إيقاف الجلسة.",
+        )
+    } else {
+        VpnUiState()
     }
 }
 
