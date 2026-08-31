@@ -161,22 +161,20 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
     override fun writeDebugMessage(message: String?) = Unit
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            getSystemService(NotificationManager::class.java).createNotificationChannel(
-                NotificationChannel(
-                    NOTIFICATION_CHANNEL,
-                    "Arab VPN",
-                    NotificationManager.IMPORTANCE_LOW,
-                ).apply {
-                    description = "حالة اتصال VPN"
-                    setShowBadge(false)
-                }
-            )
-        }
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(
+                NOTIFICATION_CHANNEL,
+                "Arab VPN",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = "حالة اتصال VPN"
+                setShowBadge(false)
+            }
+        )
     }
 
     private fun buildNotification(text: String) = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL)
-        .setSmallIcon(R.mipmap.ic_launcher)
+        .setSmallIcon(R.drawable.ic_arab_vpn)
         .setContentTitle("Arab VPN")
         .setContentText(text)
         .setOngoing(true)
@@ -185,8 +183,8 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
         .build()
 
     companion object {
-        private const val ACTION_START = "com.vibe.app.vpn.START_SING_BOX"
-        private const val ACTION_STOP = "com.vibe.app.vpn.STOP_SING_BOX"
+        private const val ACTION_START = "com.malik05255.arabvpn.vpn.START_SING_BOX"
+        private const val ACTION_STOP = "com.malik05255.arabvpn.vpn.STOP_SING_BOX"
         private const val EXTRA_CONFIG_PATH = "config_path"
         private const val NOTIFICATION_CHANNEL = "arab_vpn_connection"
         private const val NOTIFICATION_ID = 7021
@@ -245,7 +243,7 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
                     basePath = baseDir.absolutePath
                     workingPath = workingDir.absolutePath
                     tempPath = tempDir.absolutePath
-                    fixAndroidStack = debuggable || Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                    fixAndroidStack = true
                     logMaxLines = 1_000
                     debug = debuggable
                     crashReportSource = "ArabVPN"
