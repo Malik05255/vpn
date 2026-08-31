@@ -18,9 +18,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.PowerSettingsNew
-import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -51,7 +50,7 @@ fun VpnScreen(
     onCountrySelected: (VpnCountry) -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
-    onImportProfile: () -> Unit,
+    onOpenLocationSettings: () -> Unit,
 ) {
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Surface(modifier = Modifier.fillMaxSize()) {
@@ -66,7 +65,7 @@ fun VpnScreen(
                 Header()
 
                 Text(
-                    text = "اختر الدولة، والتطبيق يبحث تلقائياً عن أفضل خادم مجاني متاح ثم يتحقق منه قبل إعلان الاتصال.",
+                    text = "اختر الدولة فقط. التطبيق يتولى تلقائياً VPN وIP وDNS والتحقق من الجودة ومزامنة الموقع.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -75,42 +74,24 @@ fun VpnScreen(
                     CountryCard(
                         country = country,
                         selected = state.selectedCountry == country,
-                        hasPrivateFallback = country in state.configuredCountries,
                         enabled = state.connectionStatus == ConnectionStatus.DISCONNECTED,
                         onClick = { onCountrySelected(country) },
                     )
                 }
 
-                state.selectedCountry?.let { selected ->
-                    if (state.connectionStatus == ConnectionStatus.DISCONNECTED) {
-                        SetupCard(
-                            country = selected,
-                            hasPrivateFallback = selected in state.configuredCountries,
-                            onImportProfile = onImportProfile,
-                        )
-                    }
-                }
-
                 state.errorMessage?.let { MessageCard(it, isError = true) }
                 state.noticeMessage?.let { MessageCard(it, isError = false) }
 
-                state.ipLocation?.let { location ->
-                    ConnectionDetails(
-                        state = state,
-                        country = state.selectedCountry,
-                        location = location,
-                        quality = state.qualityReport,
-                    )
+                if (state.locationSyncStatus == LocationSyncStatus.NEEDS_SETUP) {
+                    LocationSetupCard(onOpenLocationSettings)
                 }
 
-                ConnectionButton(
-                    state = state,
-                    onConnect = onConnect,
-                    onDisconnect = onDisconnect,
-                )
+                state.ipLocation?.let { location ->
+                    ConnectionDetails(state, location)
+                }
 
+                ConnectionButton(state, onConnect, onDisconnect)
                 QualityPolicyNote()
-                PrivacyNote()
             }
         }
     }
@@ -127,10 +108,7 @@ private fun Header() {
             shape = RoundedCornerShape(18.dp),
             color = MaterialTheme.colorScheme.primaryContainer,
         ) {
-            Box(
-                modifier = Modifier.size(58.dp),
-                contentAlignment = Alignment.Center,
-            ) {
+            Box(modifier = Modifier.size(58.dp), contentAlignment = Alignment.Center) {
                 Icon(
                     imageVector = Icons.Rounded.Shield,
                     contentDescription = null,
@@ -140,13 +118,9 @@ private fun Header() {
             }
         }
         Column {
+            Text("Arab VPN", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text(
-                text = "Arab VPN",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = "اختيار تلقائي · فحص دولة · فحص جودة",
+                "دولة واحدة · كل شيء تلقائي",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -158,104 +132,63 @@ private fun Header() {
 private fun CountryCard(
     country: VpnCountry,
     selected: Boolean,
-    hasPrivateFallback: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    val border = if (selected) {
-        BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
-    } else {
-        BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-    }
-
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = enabled, onClick = onClick),
+        modifier = Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick),
         shape = RoundedCornerShape(20.dp),
-        border = border,
+        border = BorderStroke(
+            if (selected) 2.dp else 1.dp,
+            if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+        ),
         colors = CardDefaults.cardColors(
             containerColor = if (selected) {
                 MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerLow
-            }
+            } else MaterialTheme.colorScheme.surfaceContainerLow,
         ),
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(18.dp),
+            modifier = Modifier.fillMaxWidth().padding(18.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text(text = country.flag, fontSize = 34.sp)
+            Text(country.flag, fontSize = 34.sp)
             Column(modifier = Modifier.weight(1f)) {
+                Text(country.displayNameAr, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 Text(
-                    text = country.displayNameAr,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = if (hasPrivateFallback) {
-                        "بحث تلقائي + WireGuard احتياطي"
-                    } else {
-                        "بحث تلقائي عن أفضل خادم مجاني"
-                    },
+                    "VPN + IP + DNS + موقع تلقائي",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             if (selected) {
-                Icon(
-                    imageVector = Icons.Rounded.CheckCircle,
-                    contentDescription = "الدولة المحددة",
-                    tint = MaterialTheme.colorScheme.primary,
-                )
+                Icon(Icons.Rounded.CheckCircle, contentDescription = "محدد", tint = MaterialTheme.colorScheme.primary)
             }
         }
     }
 }
 
 @Composable
-private fun SetupCard(
-    country: VpnCountry,
-    hasPrivateFallback: Boolean,
-    onImportProfile: () -> Unit,
-) {
+private fun LocationSetupCard(onOpenLocationSettings: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
     ) {
         Column(
-            modifier = Modifier.padding(18.dp),
+            modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(Icons.Rounded.Settings, contentDescription = null)
-                Text(
-                    text = "احتياطي خاص لـ ${country.displayNameAr}",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Rounded.LocationOn, contentDescription = null)
+                Text("إعداد الموقع لمرة واحدة", fontWeight = FontWeight.Bold)
             }
             Text(
-                text = if (hasPrivateFallback) {
-                    "يوجد WireGuard احتياطي محفوظ على الجهاز. سيستخدمه التطبيق فقط إذا لم يجد مساراً عاماً يحقق شروط الجودة."
-                } else {
-                    "هذا اختياري فقط. البحث المجاني التلقائي يعمل من دون ملف، ويمكنك إضافة WireGuard خاص كمسار احتياطي لاحقاً."
-                },
+                "Android يتطلب أن تختار Arab VPN كتطبيق الموقع للاختبار مرة واحدة. بعد العودة للتطبيق ستتم مزامنة الموقع تلقائياً بدون ضغط إضافي.",
                 style = MaterialTheme.typography.bodyMedium,
             )
-            OutlinedButton(
-                modifier = Modifier.fillMaxWidth(),
-                onClick = onImportProfile,
-            ) {
-                Text(if (hasPrivateFallback) "استبدال WireGuard الاحتياطي" else "إضافة WireGuard احتياطي")
+            OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = onOpenLocationSettings) {
+                Text("فتح خيارات المطور")
             }
         }
     }
@@ -266,90 +199,48 @@ private fun MessageCard(message: String, isError: Boolean) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = if (isError) {
-                MaterialTheme.colorScheme.errorContainer
-            } else {
-                MaterialTheme.colorScheme.tertiaryContainer
-            }
+            containerColor = if (isError) MaterialTheme.colorScheme.errorContainer
+            else MaterialTheme.colorScheme.tertiaryContainer,
         ),
     ) {
         Text(
-            text = message,
+            message,
             modifier = Modifier.padding(16.dp),
-            color = if (isError) {
-                MaterialTheme.colorScheme.onErrorContainer
-            } else {
-                MaterialTheme.colorScheme.onTertiaryContainer
-            },
+            color = if (isError) MaterialTheme.colorScheme.onErrorContainer
+            else MaterialTheme.colorScheme.onTertiaryContainer,
         )
     }
 }
 
 @Composable
-private fun ConnectionDetails(
-    state: VpnUiState,
-    country: VpnCountry?,
-    location: IpLocation,
-    quality: ConnectionQualityReport?,
-) {
+private fun ConnectionDetails(state: VpnUiState, location: IpLocation) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
     ) {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "الاتصال موثّق",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                if (quality?.geoVerified == true) {
-                    Icon(
-                        imageVector = Icons.Rounded.CheckCircle,
-                        contentDescription = "تم التحقق",
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("الاتصال موثّق", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             HorizontalDivider()
-            DetailRow("الدولة المطلوبة", country?.let { "${it.flag} ${it.displayNameAr}" }.orEmpty())
-            DetailRow("الدولة المكتشفة", location.country.ifBlank { location.countryCode })
-            DetailRow("عنوان IP العام", location.ip.ifBlank { "غير متاح" })
+            DetailRow("الدولة", state.selectedCountry?.let { "${it.flag} ${it.displayNameAr}" }.orEmpty())
+            DetailRow("IP", location.ip.ifBlank { "غير متاح" })
+            if (location.city.isNotBlank()) DetailRow("مدينة خروج IP", location.city)
             state.protocol?.let { DetailRow("البروتوكول", it) }
-            state.engine?.let {
-                DetailRow("محرك الاتصال", if (it == ConnectionEngine.SING_BOX) "sing-box" else "WireGuard")
+            state.qualityReport?.let { report ->
+                DetailRow("Ping", "${report.medianLatencyMs} ms")
+                DetailRow("السرعة", "${String.format(Locale.US, "%.1f", report.downloadMbps)} Mbps")
+                DetailRow("فحص الدولة", if (report.geoVerified) "متطابق ✓" else "غير مكتمل")
             }
-            state.nodeName?.takeIf(String::isNotBlank)?.let { DetailRow("المسار المختار", it.take(42)) }
-            state.preflightLatencyMs?.let { DetailRow("استجابة الخادم قبل النفق", "$it ms") }
-            quality?.let { report ->
-                DetailRow("زمن الاستجابة الفعلي", "${report.medianLatencyMs} ms")
-                DetailRow("سرعة التحميل المقاسة", "${String.format(Locale.US, "%.1f", report.downloadMbps)} Mbps")
-                DetailRow("التحقق الجغرافي", if (report.geoVerified) "مصدران متطابقان ✓" else "غير مكتمل")
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Dns,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Text(
-                    text = "DNS يمر داخل النفق، ولا تظهر حالة «متصل» إلا بعد اجتياز فحص الجودة.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            DetailRow(
+                "الموقع",
+                when (state.locationSyncStatus) {
+                    LocationSyncStatus.ACTIVE -> state.locationTarget?.city?.let { "$it ✓" } ?: "متزامن ✓"
+                    LocationSyncStatus.NEEDS_SETUP -> "يحتاج إعداد Android مرة واحدة"
+                    LocationSyncStatus.SYNCING -> "جاري الضبط…"
+                    LocationSyncStatus.FAILED -> "تعذر الضبط"
+                    LocationSyncStatus.IDLE -> "غير نشط"
+                },
+            )
         }
     }
 }
@@ -367,27 +258,18 @@ private fun DetailRow(label: String, value: String) {
 }
 
 @Composable
-private fun ConnectionButton(
-    state: VpnUiState,
-    onConnect: () -> Unit,
-    onDisconnect: () -> Unit,
-) {
+private fun ConnectionButton(state: VpnUiState, onConnect: () -> Unit, onDisconnect: () -> Unit) {
     val selected = state.selectedCountry
     val busy = state.connectionStatus == ConnectionStatus.CONNECTING ||
         state.connectionStatus == ConnectionStatus.DISCONNECTING
     val connected = state.connectionStatus == ConnectionStatus.CONNECTED
 
     Button(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(58.dp),
+        modifier = Modifier.fillMaxWidth().height(58.dp),
         enabled = !busy && (connected || selected != null),
         onClick = if (connected) onDisconnect else onConnect,
-        colors = if (connected) {
-            ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-        } else {
-            ButtonDefaults.buttonColors()
-        },
+        colors = if (connected) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+        else ButtonDefaults.buttonColors(),
     ) {
         if (busy) {
             CircularProgressIndicator(
@@ -397,24 +279,15 @@ private fun ConnectionButton(
             )
             Spacer(Modifier.size(10.dp))
         } else {
-            Icon(
-                imageVector = Icons.Rounded.PowerSettingsNew,
-                contentDescription = null,
-                modifier = Modifier.size(22.dp),
-            )
+            Icon(Icons.Rounded.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(22.dp))
             Spacer(Modifier.size(8.dp))
         }
-
         Text(
-            text = when (state.connectionStatus) {
-                ConnectionStatus.CONNECTING -> "جاري البحث والفحص والاتصال..."
+            when (state.connectionStatus) {
+                ConnectionStatus.CONNECTING -> "جاري تجهيز كل شيء…"
                 ConnectionStatus.CONNECTED -> "فصل الاتصال"
-                ConnectionStatus.DISCONNECTING -> "جاري الفصل..."
-                ConnectionStatus.DISCONNECTED -> if (selected == null) {
-                    "اختر دولة أولاً"
-                } else {
-                    "ابحث واتصل عبر ${selected.displayNameAr}"
-                }
+                ConnectionStatus.DISCONNECTING -> "جاري الفصل…"
+                ConnectionStatus.DISCONNECTED -> if (selected == null) "اختر دولة" else "اتصال بـ ${selected.displayNameAr}"
             },
             fontWeight = FontWeight.Bold,
         )
@@ -424,23 +297,10 @@ private fun ConnectionButton(
 @Composable
 private fun QualityPolicyNote() {
     Text(
-        text = "سياسة الجودة: لا يظهر التطبيق حالة «متصل» إلا إذا تطابقت الدولة في فحصين مستقلين، وكان متوسط الاستجابة ≤ ${ConnectionQualityClient.MAX_MEDIAN_LATENCY_MS} ms، وسرعة التحميل المقاسة ≥ ${String.format(Locale.US, "%.1f", ConnectionQualityClient.MIN_DOWNLOAD_MBPS)} Mbps.",
+        "لا تظهر حالة الاتصال الموثّق إلا بعد تطابق الدولة في فحصين مستقلين، Ping ≤ ${ConnectionQualityClient.MAX_MEDIAN_LATENCY_MS}ms، وسرعة ≥ ${String.format(Locale.US, "%.1f", ConnectionQualityClient.MIN_DOWNLOAD_MBPS)} Mbps. Android يعلّم الموقع المُدخل عبر وضع الاختبار كموقع Mock للنظام.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth(),
-    )
-}
-
-@Composable
-private fun PrivacyNote() {
-    Text(
-        text = "الـVPN يغيّر مسار الإنترنت وعنوان IP وDNS فقط. لا يغيّر GPS أو شريحة SIM أو المنطقة الزمنية للجهاز.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = TextAlign.Center,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
     )
 }
