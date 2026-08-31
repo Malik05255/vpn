@@ -9,11 +9,11 @@ import java.net.URL
 import kotlin.math.roundToLong
 
 /**
- * Post-connect quality gate.
+ * Post-connect verification gate.
  *
- * A tunnel is never reported as connected merely because the VPN interface is UP.
- * We require two independent geo signals to agree with the selected country, then
- * measure real HTTPS latency and downstream throughput through the tunnel.
+ * Country identity is a hard requirement: both independent geo signals must match. Public relay
+ * performance is volatile, so latency/throughput are measured and reported but no longer turn a
+ * country-correct tunnel into a false "no connection" result.
  */
 class ConnectionQualityClient(
     private val ipLocationClient: IpLocationClient = IpLocationClient(),
@@ -21,16 +21,16 @@ class ConnectionQualityClient(
     suspend fun verify(expectedCountry: VpnCountry): ConnectionQualityReport = withContext(Dispatchers.IO) {
         val (primary, secondary) = verifyGeoWithWarmup(expectedCountry)
 
-        val latencySamples = List(LATENCY_SAMPLES) { measureLatencyMs() }.sorted()
-        val medianLatency = latencySamples[latencySamples.size / 2]
-        require(medianLatency <= MAX_MEDIAN_LATENCY_MS) {
-            "الخادم بطيء: زمن الاستجابة ${medianLatency}ms ويتجاوز الحد المسموح ${MAX_MEDIAN_LATENCY_MS}ms."
-        }
+        val latencySamples = List(LATENCY_SAMPLES) {
+            runCatching { measureLatencyMs() }.getOrNull()
+        }.filterNotNull().sorted()
+        val medianLatency = latencySamples
+            .takeIf { it.isNotEmpty() }
+            ?.let { it[it.size / 2] }
+            ?: UNAVAILABLE_LATENCY_MS
 
-        val downloadMbps = measureDownloadMbps()
-        require(downloadMbps >= MIN_DOWNLOAD_MBPS) {
-            "سرعة الخادم منخفضة: ${formatMbps(downloadMbps)} Mbps والحد الأدنى ${formatMbps(MIN_DOWNLOAD_MBPS)} Mbps."
-        }
+        val downloadMbps = runCatching { measureDownloadMbps() }
+            .getOrDefault(UNAVAILABLE_DOWNLOAD_MBPS)
 
         ConnectionQualityReport(
             ipLocation = primary,
@@ -38,15 +38,11 @@ class ConnectionQualityClient(
             medianLatencyMs = medianLatency,
             downloadMbps = downloadMbps,
             geoVerified = true,
+            performanceAcceptable =
+                medianLatency in 0..MAX_MEDIAN_LATENCY_MS && downloadMbps >= MIN_DOWNLOAD_MBPS,
         )
     }
 
-    /**
-     * Android may report the old route for a short moment after the TUN starts. Treating that
-     * sub-second transition as a permanent country failure caused valid free nodes to be rejected.
-     * We retry the *real* external geo checks instead; success is still impossible unless both
-     * independent services agree with the requested country.
-     */
     private suspend fun verifyGeoWithWarmup(expectedCountry: VpnCountry): Pair<IpLocation, TraceResult> {
         var lastError: Throwable? = null
         repeat(GEO_WARMUP_ATTEMPTS) { attemptIndex ->
@@ -60,10 +56,6 @@ class ConnectionQualityClient(
                 require(secondary.countryCode.equals(expectedCountry.code, ignoreCase = true)) {
                     "فشل التحقق المزدوج من الدولة: Cloudflare اكتشف ${secondary.countryCode.ifBlank { "دولة أخرى" }} بدل ${expectedCountry.code}."
                 }
-
-                // Different destinations can legitimately be NATed through different public IPs
-                // by the same proxy pool. Country agreement is the security property we need here;
-                // exact IP equality was rejecting valid country-correct routes.
                 primary to secondary
             }
 
@@ -151,21 +143,19 @@ class ConnectionQualityClient(
             setRequestProperty("User-Agent", "ArabVPN/1.0 Android")
         }
 
-    private fun formatMbps(value: Double): String = "%.1f".format(java.util.Locale.US, value)
-
     private data class TraceResult(
         val ip: String,
         val countryCode: String,
     )
 
     companion object {
-        // This is a minimum usability floor for volatile public/free routes, not a premium-VPN SLA.
-        // Geography remains strict: both independent country checks must still match exactly.
         const val MAX_MEDIAN_LATENCY_MS = 1_200L
         const val MIN_DOWNLOAD_MBPS = 1.0
+        const val UNAVAILABLE_LATENCY_MS = -1L
+        const val UNAVAILABLE_DOWNLOAD_MBPS = -1.0
 
-        private const val GEO_WARMUP_ATTEMPTS = 4
-        private const val GEO_WARMUP_RETRY_MS = 900L
+        private const val GEO_WARMUP_ATTEMPTS = 5
+        private const val GEO_WARMUP_RETRY_MS = 1_000L
         private const val LATENCY_SAMPLES = 3
         private const val LATENCY_TIMEOUT_MS = 4_000
         private const val SPEED_TIMEOUT_MS = 12_000
@@ -183,4 +173,5 @@ data class ConnectionQualityReport(
     val medianLatencyMs: Long,
     val downloadMbps: Double,
     val geoVerified: Boolean,
+    val performanceAcceptable: Boolean = true,
 )
