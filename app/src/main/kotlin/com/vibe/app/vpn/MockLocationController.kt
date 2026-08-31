@@ -3,9 +3,9 @@ package com.vibe.app.vpn
 import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
-import android.location.Criteria
 import android.location.Location
 import android.location.LocationManager
+import android.location.provider.ProviderProperties
 import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
@@ -88,8 +88,8 @@ class MockLocationController(context: Context) {
             true,
             true,
             true,
-            Criteria.POWER_LOW,
-            Criteria.ACCURACY_FINE,
+            ProviderProperties.POWER_USAGE_LOW,
+            ProviderProperties.ACCURACY_FINE,
         )
         locationManager.setTestProviderEnabled(provider, true)
     }
