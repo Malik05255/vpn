@@ -116,7 +116,7 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
                         running = true
                         writeServiceState(STATE_RUNNING)
                         updateForegroundNotification("VPN متصل")
-                        receiver.send(RESULT_START_OK, Bundle.EMPTY)
+                        receiver?.send(RESULT_START_OK, Bundle.EMPTY)
                     }
                     .onFailure { error ->
                         stopRuntime()
@@ -130,12 +130,12 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
 
     private fun handleLocationSync(intent: Intent, receiver: ResultReceiver?) {
         if (!running) {
-            receiver.send(RESULT_LOCATION_FAILED, messageBundle("اتصال VPN غير نشط"))
+            receiver?.send(RESULT_LOCATION_FAILED, messageBundle("اتصال VPN غير نشط"))
             return
         }
         val target = intent.readLocationTarget()
         if (target == null) {
-            receiver.send(RESULT_LOCATION_FAILED, messageBundle("بيانات الموقع غير مكتملة"))
+            receiver?.send(RESULT_LOCATION_FAILED, messageBundle("بيانات الموقع غير مكتملة"))
             return
         }
         serviceScope.launch {
@@ -144,12 +144,12 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
             when (result) {
                 is LocationSyncResult.Active -> {
                     if (running) updateForegroundNotification("VPN والموقع متصلان · ${result.location.city}")
-                    receiver.send(RESULT_LOCATION_ACTIVE, Bundle.EMPTY)
+                    receiver?.send(RESULT_LOCATION_ACTIVE, Bundle.EMPTY)
                 }
                 LocationSyncResult.NeedsDeveloperSetup ->
-                    receiver.send(RESULT_LOCATION_NEEDS_SETUP, Bundle.EMPTY)
+                    receiver?.send(RESULT_LOCATION_NEEDS_SETUP, Bundle.EMPTY)
                 is LocationSyncResult.Failed ->
-                    receiver.send(RESULT_LOCATION_FAILED, messageBundle(result.reason))
+                    receiver?.send(RESULT_LOCATION_FAILED, messageBundle(result.reason))
             }
         }
     }
@@ -160,7 +160,7 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
                 runCatching { mockLocation?.stop() }
                 stopRuntime()
                 writeServiceState(STATE_STOPPED)
-                receiver.send(RESULT_STOP_OK, Bundle.EMPTY)
+                receiver?.send(RESULT_STOP_OK, Bundle.EMPTY)
                 stopSelf(startId)
             }
         }
@@ -198,8 +198,6 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
         val content = file.readText()
         require(content.isNotBlank()) { "sing-box configuration is empty" }
 
-        // Reject malformed/unsupported configs before a service runtime is created. This catches
-        // invalid V2Ray transport/TLS/DNS combinations as a normal candidate failure.
         Libbox.checkConfig(content)
 
         val server = CommandServer(this, activePlatform)
