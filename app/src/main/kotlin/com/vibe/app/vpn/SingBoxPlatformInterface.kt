@@ -5,6 +5,7 @@ import android.net.DnsResolver
 import android.net.IpPrefix
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -79,6 +80,13 @@ internal class SingBoxPlatformInterface(
             builder.applyRoutes(options, ipv4.isNotEmpty(), ipv6.isNotEmpty())
         }
 
+        // Tell Android which physical network carries the VPN. Without this, some devices report
+        // the newly-created VPN as the default network and outbound/DNS discovery can recurse into
+        // the tunnel itself.
+        chooseUnderlyingNetwork()?.let { network ->
+            runCatching { builder.setUnderlyingNetworks(arrayOf(network)) }
+        }
+
         closeTun()
         val descriptor = builder.establish()
             ?: error("android: VPN tunnel could not be established")
@@ -140,14 +148,18 @@ internal class SingBoxPlatformInterface(
     override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
         closeDefaultInterfaceMonitor(listener)
         val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = updateDefaultInterface(listener, network)
+            override fun onAvailable(network: Network) = updateDefaultInterface(listener)
             override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) =
-                updateDefaultInterface(listener, network)
-            override fun onLost(network: Network) = updateDefaultInterface(listener, connectivityManager.activeNetwork)
+                updateDefaultInterface(listener)
+            override fun onLost(network: Network) = updateDefaultInterface(listener)
         }
         defaultNetworkCallback = callback
-        connectivityManager.registerDefaultNetworkCallback(callback)
-        updateDefaultInterface(listener, connectivityManager.activeNetwork)
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        connectivityManager.registerNetworkCallback(request, callback)
+        updateDefaultInterface(listener)
     }
 
     override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
@@ -157,7 +169,8 @@ internal class SingBoxPlatformInterface(
         defaultNetworkCallback = null
     }
 
-    private fun updateDefaultInterface(listener: InterfaceUpdateListener, network: Network?) {
+    private fun updateDefaultInterface(listener: InterfaceUpdateListener) {
+        val network = chooseUnderlyingNetwork()
         val interfaceName = network
             ?.let(connectivityManager::getLinkProperties)
             ?.interfaceName
@@ -166,11 +179,43 @@ internal class SingBoxPlatformInterface(
         listener.updateDefaultInterface(interfaceName, index, false, false)
     }
 
+    private fun chooseUnderlyingNetwork(): Network? {
+        val active = connectivityManager.activeNetwork
+        if (active != null && isUsableUnderlying(active)) return active
+
+        return connectivityManager.allNetworks
+            .asSequence()
+            .filter(::isUsableUnderlying)
+            .maxByOrNull(::networkPreferenceScore)
+    }
+
+    private fun isUsableUnderlying(network: Network): Boolean {
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+            !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+    }
+
+    private fun networkPreferenceScore(network: Network): Int {
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return 0
+        var score = if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) 100 else 0
+        score += when {
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 40
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 30
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 20
+            else -> 10
+        }
+        return score
+    }
+
     @Suppress("DEPRECATION")
     override fun getInterfaces(): NetworkInterfaceIterator {
         val androidNetworks = connectivityManager.allNetworks.mapNotNull { network ->
             val properties = connectivityManager.getLinkProperties(network) ?: return@mapNotNull null
             val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return@mapNotNull null
+            if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) ||
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            ) return@mapNotNull null
             properties.interfaceName.orEmpty() to (properties to capabilities)
         }.toMap()
 
@@ -303,12 +348,12 @@ private class AndroidLocalDnsTransport(
 
     @androidx.annotation.RequiresApi(Build.VERSION_CODES.Q)
     private fun exchangeRaw(context: ExchangeContext, message: ByteArray) = runBlocking {
-        val network = connectivityManager.activeNetwork ?: error("android: default network unavailable")
+        val physicalNetwork = physicalNetwork()
         suspendCancellableCoroutine { continuation ->
             val cancellation = CancellationSignal()
             context.onCancel(cancellation::cancel)
             DnsResolver.getInstance().rawQuery(
-                network,
+                physicalNetwork,
                 message,
                 DnsResolver.FLAG_NO_RETRY,
                 Dispatchers.IO.asExecutor(),
@@ -331,7 +376,7 @@ private class AndroidLocalDnsTransport(
     }
 
     override fun lookup(context: ExchangeContext, network: String, domain: String) = runBlocking {
-        val defaultNetwork = connectivityManager.activeNetwork ?: error("android: default network unavailable")
+        val physicalNetwork = physicalNetwork()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             suspendCancellableCoroutine { continuation ->
                 val cancellation = CancellationSignal()
@@ -358,24 +403,51 @@ private class AndroidLocalDnsTransport(
                 }
                 if (queryType == null) {
                     DnsResolver.getInstance().query(
-                        defaultNetwork, domain, DnsResolver.FLAG_NO_RETRY,
+                        physicalNetwork, domain, DnsResolver.FLAG_NO_RETRY,
                         Dispatchers.IO.asExecutor(), cancellation, callback,
                     )
                 } else {
                     DnsResolver.getInstance().query(
-                        defaultNetwork, domain, queryType, DnsResolver.FLAG_NO_RETRY,
+                        physicalNetwork, domain, queryType, DnsResolver.FLAG_NO_RETRY,
                         Dispatchers.IO.asExecutor(), cancellation, callback,
                     )
                 }
             }
         } else {
             val answer = try {
-                defaultNetwork.getAllByName(domain)
+                physicalNetwork.getAllByName(domain)
             } catch (_: UnknownHostException) {
                 context.errorCode(3)
                 return@runBlocking
             }
             context.success(answer.mapNotNull { address -> address.hostAddress }.joinToString("\n"))
         }
+    }
+
+    private fun physicalNetwork(): Network {
+        val active = connectivityManager.activeNetwork
+        if (active != null && isPhysical(active)) return active
+        return connectivityManager.allNetworks
+            .asSequence()
+            .filter(::isPhysical)
+            .maxByOrNull { network ->
+                val capabilities = connectivityManager.getNetworkCapabilities(network)
+                var score = if (capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true) 100 else 0
+                score += when {
+                    capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> 40
+                    capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> 30
+                    capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> 20
+                    else -> 10
+                }
+                score
+            }
+            ?: error("android: physical default network unavailable")
+    }
+
+    private fun isPhysical(network: Network): Boolean {
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+            !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
     }
 }
