@@ -5,6 +5,7 @@ APK="arabvpn/build/outputs/apk/debug/arabvpn-debug.apk"
 PACKAGE="com.malik05255.arabvpn"
 ACTIVITY="com.arabvpn.app.MainActivity"
 UI_DUMP="/tmp/arabvpn-update-window.xml"
+NOTIFICATION_DUMP="/tmp/arabvpn-notifications.txt"
 
 if [[ ! -f "$APK" ]]; then
   echo "Missing APK: $APK" >&2
@@ -19,7 +20,7 @@ adb shell pm grant "$PACKAGE" android.permission.POST_NOTIFICATIONS || true
 adb shell am force-stop "$PACKAGE" || true
 adb shell am start -W -n "$PACKAGE/$ACTIVITY"
 
-# Give the real GitHub release API/update.json request enough time on the emulator network.
+# Give the real GitHub update endpoint enough time on the emulator network.
 sleep 15
 
 if ! adb shell pidof "$PACKAGE" >/dev/null 2>&1; then
@@ -38,18 +39,23 @@ if ! grep -Fq "تحديث جديد" "$UI_DUMP" || ! grep -Fq "تحديث الآ�
   exit 1
 fi
 
-NOTIFICATION_DUMP="$(adb shell dumpsys notification --noredact)"
-if ! printf '%s\n' "$NOTIFICATION_DUMP" | grep -Fq "$PACKAGE" || \
-   ! printf '%s\n' "$NOTIFICATION_DUMP" | grep -Fq "8101"; then
+# Store the dump as a file instead of a huge shell variable. The old pipeline could return a
+# false negative under pipefail even though NotificationManager clearly contained id=8101.
+adb shell dumpsys notification --noredact > "$NOTIFICATION_DUMP"
+if ! grep -Fq "pkg=$PACKAGE" "$NOTIFICATION_DUMP" || \
+   ! grep -Fq "id=8101" "$NOTIFICATION_DUMP" || \
+   ! grep -Fq "arab_vpn_updates_v2" "$NOTIFICATION_DUMP" || \
+   ! grep -Fq "تحديث الآن" "$NOTIFICATION_DUMP"; then
   echo "Expected Android update notification was not posted" >&2
-  printf '%s\n' "$NOTIFICATION_DUMP" | tail -800 >&2
+  tail -800 "$NOTIFICATION_DUMP" >&2
   exit 1
 fi
 
-LOGCAT="$(adb logcat -d -v threadtime)"
-if printf '%s\n' "$LOGCAT" | grep -qE "FATAL EXCEPTION|Process: ${PACKAGE}"; then
+LOGCAT_FILE="/tmp/arabvpn-update-logcat.txt"
+adb logcat -d -v threadtime > "$LOGCAT_FILE"
+if grep -qE "FATAL EXCEPTION|Process: ${PACKAGE}" "$LOGCAT_FILE"; then
   echo "Fatal runtime crash detected during update alert test" >&2
-  printf '%s\n' "$LOGCAT" | grep -A120 -B30 -E "FATAL EXCEPTION|Process: ${PACKAGE}" || true
+  grep -A120 -B30 -E "FATAL EXCEPTION|Process: ${PACKAGE}" "$LOGCAT_FILE" || true
   exit 1
 fi
 
