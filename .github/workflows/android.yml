@@ -96,6 +96,41 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: ./ci/arab-vpn-startup-smoke-test.sh
 
+  update-alert-smoke-test:
+    name: Update Popup + Notification Smoke Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: gradle
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Grant execute permission
+        run: chmod +x gradlew ci/arab-vpn-update-alert-smoke-test.sh
+      - name: Build deliberately older debug APK
+        run: |
+          ./gradlew --no-daemon :arabvpn:assembleDebug \
+            -ParabVpnVersionCode=100001 \
+            -ParabVpnVersionName="1.0.1-alert-test"
+      - name: Verify real GitHub update popup and Android notification
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: ./ci/arab-vpn-update-alert-smoke-test.sh
+
   unit-tests:
     name: Arab VPN Unit Tests
     runs-on: ubuntu-latest
@@ -168,6 +203,7 @@ jobs:
     needs:
       - assemble-debug
       - startup-smoke-test
+      - update-alert-smoke-test
       - unit-tests
       - android-lint
       - release-build
@@ -265,5 +301,18 @@ jobs:
               --target "$GITHUB_SHA" \
               --title "Arab VPN $VERSION_NAME" \
               --notes "قناة التطوير التلقائية لـ Arab VPN. هذه النسخ تحمل توقيع تطوير ثابت لتجربة التحديث فوق النسخة السابقة." \
+              --prerelease
+          fi
+
+          # A fixed rolling manifest removes the expensive GitHub releases-list lookup from the
+          # Android hot path. update.json still points to immutable versioned APK/patch assets.
+          ROLLING_TAG="arab-vpn-dev-latest"
+          if gh release view "$ROLLING_TAG" >/dev/null 2>&1; then
+            gh release upload "$ROLLING_TAG" dist/update.json --clobber
+          else
+            gh release create "$ROLLING_TAG" dist/update.json \
+              --target "$GITHUB_SHA" \
+              --title "Arab VPN latest development manifest" \
+              --notes "Rolling manifest used by Arab VPN for one-request update discovery." \
               --prerelease
           fi

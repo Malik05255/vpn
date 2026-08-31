@@ -13,7 +13,8 @@ class UpdateCheckWorker(
 ) : CoroutineWorker(appContext, workerParams) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         runCatching {
-            val manifest = GitHubUpdateClient().fetchLatestManifest() ?: return@runCatching
+            val manifest = GitHubUpdateClient(applicationContext).fetchLatestManifest()
+                ?: return@runCatching
             if (manifest.versionCode > BuildConfig.VERSION_CODE) {
                 UpdateNotifications.showAvailable(applicationContext, manifest)
             }

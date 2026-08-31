@@ -31,11 +31,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.arabvpn.app.update.GitHubUpdateClient
 import com.arabvpn.app.update.UpdateDownloadReceiver
 import com.arabvpn.app.update.UpdateManifest
+import com.arabvpn.app.update.UpdateNotifications
 import com.vibe.app.BuildConfig
 import com.vibe.app.vpn.SingBoxVpnService
 import com.vibe.app.vpn.VpnScreen
 import com.vibe.app.vpn.VpnViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 
 private val ArabVpnLightColors = lightColorScheme(
@@ -93,6 +95,9 @@ private val ArabVpnDarkColors = darkColorScheme(
 class MainActivity : ComponentActivity() {
     private val vpnViewModel: VpnViewModel by viewModels()
 
+    // Incremented on every resume so the visible updater does not depend on Activity recreation.
+    private val updateCheckGeneration = MutableStateFlow(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
@@ -100,18 +105,35 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val state = vpnViewModel.uiState.collectAsStateWithLifecycle().value
+            val checkGeneration = updateCheckGeneration.collectAsStateWithLifecycle().value
             val darkTheme = isSystemInDarkTheme()
-            var availableUpdate by remember { mutableStateOf<UpdateManifest?>(null) }
+            val updateClient = remember { GitHubUpdateClient(this@MainActivity) }
 
-            // Do not depend on WorkManager/notification delivery for the visible update prompt.
-            // Every app launch checks GitHub directly and surfaces an in-app dialog immediately.
-            LaunchedEffect(Unit) {
-                availableUpdate = runCatching {
+            // Cached discovery renders synchronously. If the background worker already saw a new
+            // release, the dialog is present on the first composed frame instead of waiting on GitHub.
+            val cachedUpdate = remember {
+                updateClient.cachedManifest()
+                    ?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }
+            }
+            var availableUpdate by remember { mutableStateOf<UpdateManifest?>(cachedUpdate) }
+            var dismissedUpdateVersion by remember { mutableStateOf<Int?>(null) }
+
+            // Refresh on every return. The fast path is a single fixed-manifest request; network
+            // errors never erase a valid cached update that is already visible to the user.
+            LaunchedEffect(checkGeneration) {
+                val freshUpdate = runCatching {
                     withContext(Dispatchers.IO) {
-                        GitHubUpdateClient().fetchLatestManifest()
+                        updateClient.fetchLatestManifest()
                             ?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }
                     }
                 }.getOrNull()
+
+                if (freshUpdate != null) {
+                    UpdateNotifications.showAvailable(this@MainActivity, freshUpdate)
+                    if (dismissedUpdateVersion != freshUpdate.versionCode) {
+                        availableUpdate = freshUpdate
+                    }
+                }
             }
 
             val vpnPermissionLauncher = rememberLauncherForActivityResult(
@@ -126,7 +148,13 @@ class MainActivity : ComponentActivity() {
 
             val notificationPermissionLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.RequestPermission(),
-            ) { /* The in-app update dialog still works if notifications are declined. */ }
+            ) { granted ->
+                // The first update check can finish while Android's permission sheet is still open.
+                // Re-check immediately after approval so the notification is not lost for this launch.
+                if (granted) {
+                    updateCheckGeneration.value = updateCheckGeneration.value + 1
+                }
+            }
 
             if (
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -167,16 +195,20 @@ class MainActivity : ComponentActivity() {
                 val update = availableUpdate
                 if (update != null) {
                     AlertDialog(
-                        onDismissRequest = { availableUpdate = null },
-                        title = { Text("تحديث جديد لـ Arab VPN") },
+                        onDismissRequest = {
+                            dismissedUpdateVersion = update.versionCode
+                            availableUpdate = null
+                        },
+                        title = { Text("⬆ تحديث جديد لـ Arab VPN") },
                         text = {
                             Text(
-                                "الإصدار ${update.versionName} متاح. اضغط تحديث الآن لتنزيل فرق التحديث فقط عندما يكون متوفراً، ثم تثبيته فوق النسخة الحالية."
+                                "الإصدار ${update.versionName} متاح الآن. اضغط «تحديث الآن» للبدء مباشرة. إذا توفر ملف فرق أصغر سيستخدمه التطبيق تلقائياً."
                             )
                         },
                         confirmButton = {
                             TextButton(
                                 onClick = {
+                                    dismissedUpdateVersion = update.versionCode
                                     UpdateDownloadReceiver.enqueue(this@MainActivity)
                                     availableUpdate = null
                                     Toast.makeText(
@@ -190,7 +222,12 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         dismissButton = {
-                            TextButton(onClick = { availableUpdate = null }) {
+                            TextButton(
+                                onClick = {
+                                    dismissedUpdateVersion = update.versionCode
+                                    availableUpdate = null
+                                }
+                            ) {
                                 Text("لاحقاً")
                             }
                         },
@@ -230,6 +267,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        updateCheckGeneration.value = updateCheckGeneration.value + 1
         runCatching { vpnViewModel.retryLocationSyncIfNeeded() }
     }
 }

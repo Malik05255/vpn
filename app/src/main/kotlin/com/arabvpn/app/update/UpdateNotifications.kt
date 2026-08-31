@@ -18,7 +18,10 @@ import com.vibe.app.R
 import java.io.File
 
 object UpdateNotifications {
-    private const val CHANNEL_ID = "arab_vpn_updates"
+    // v2 intentionally uses a new channel ID. Android preserves the importance of an existing
+    // notification channel, so changing DEFAULT -> HIGH on the old ID would not upgrade devices
+    // that already created the old channel.
+    private const val CHANNEL_ID = "arab_vpn_updates_v2"
     private const val AVAILABLE_ID = 8101
     private const val DOWNLOAD_ID = 8102
     private const val READY_ID = 8103
@@ -29,20 +32,24 @@ object UpdateNotifications {
             NotificationChannel(
                 CHANNEL_ID,
                 "تحديثات Arab VPN",
-                NotificationManager.IMPORTANCE_DEFAULT,
+                NotificationManager.IMPORTANCE_HIGH,
             ).apply {
-                description = "إشعارات توفر تحديث جديد للتطبيق"
+                description = "تنبيه عند توفر إصدار جديد من Arab VPN"
+                enableVibration(true)
             }
         )
     }
 
     fun showAvailable(context: Context, manifest: UpdateManifest) {
+        createChannel(context)
         if (!canPostNotifications(context)) return
 
         val openIntent = PendingIntent.getActivity(
             context,
             1,
-            Intent(context, MainActivity::class.java),
+            Intent(context, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val downloadIntent = PendingIntent.getBroadcast(
@@ -56,10 +63,17 @@ object UpdateNotifications {
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_arab_vpn)
-            .setContentTitle("تحديث جديد لـ Arab VPN")
-            .setContentText("الإصدار ${manifest.versionName} متاح. سيتم تنزيل الفرق فقط عندما يكون متوفراً.")
+            .setContentTitle("⬆ تحديث جديد لـ Arab VPN")
+            .setContentText("الإصدار ${manifest.versionName} جاهز. اضغط للتحديث الآن.")
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    "يتوفر إصدار جديد ${manifest.versionName}. افتح Arab VPN أو اضغط «تحديث الآن» لبدء تنزيل التحديث."
+                )
+            )
             .setContentIntent(openIntent)
-            .addAction(0, "تنزيل التحديث", downloadIntent)
+            .addAction(0, "تحديث الآن", downloadIntent)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
             .build()
@@ -68,6 +82,7 @@ object UpdateNotifications {
     }
 
     fun downloadingForeground(context: Context, progress: Int): ForegroundInfo {
+        createChannel(context)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_arab_vpn)
             .setContentTitle("جاري تنزيل تحديث Arab VPN")
@@ -84,6 +99,7 @@ object UpdateNotifications {
     }
 
     fun showReady(context: Context, apk: File, manifest: UpdateManifest, usedDelta: Boolean) {
+        createChannel(context)
         if (!canPostNotifications(context)) return
 
         val installIntent = PendingIntent.getActivity(
@@ -99,10 +115,11 @@ object UpdateNotifications {
         val mode = if (usedDelta) "تم تنزيل فرق التحديث فقط" else "تم تنزيل الحزمة الكاملة"
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_arab_vpn)
-            .setContentTitle("التحديث جاهز للتثبيت")
+            .setContentTitle("✓ التحديث جاهز للتثبيت")
             .setContentText("$mode · الإصدار ${manifest.versionName}")
             .setContentIntent(installIntent)
-            .addAction(0, "تثبيت", installIntent)
+            .addAction(0, "تثبيت الآن", installIntent)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
             .build()
@@ -111,11 +128,13 @@ object UpdateNotifications {
     }
 
     fun showFailure(context: Context, message: String) {
+        createChannel(context)
         if (!canPostNotifications(context)) return
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_arab_vpn)
             .setContentTitle("تعذر تحديث Arab VPN")
             .setContentText(message)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .build()
         notifySafely(context, READY_ID, notification)
