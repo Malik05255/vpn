@@ -6,14 +6,13 @@ import android.net.VpnService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.nio.charset.StandardCharsets
 
 /**
- * Fully automatic connection manager.
- *
- * The user only chooses a country. No profile import, key entry or protocol configuration is
- * exposed: public candidates are discovered, preflighted, connected and then quality-verified.
+ * Fully automatic connection manager. Every candidate is isolated, time-bounded and completely
+ * torn down before the next one starts.
  */
 class AutomaticVpnManager(context: Context) {
     private val appContext = context.applicationContext
@@ -32,62 +31,63 @@ class AutomaticVpnManager(context: Context) {
     ): AutomaticConnectionResult = withContext(Dispatchers.IO) {
         disconnectInternal()
 
-        onProgress("جاري البحث عن خوادم مجانية متاحة في ${country.displayNameAr}…")
+        onProgress("جاري جمع واختبار المسارات المجانية في ${country.displayNameAr}…")
         val candidates = catalog.discover(country)
         val failures = mutableListOf<String>()
 
         if (candidates.isNotEmpty()) {
-            onProgress("تم العثور على ${candidates.size} مسارات حية مرشحة؛ جاري اختبار الأفضل فعلياً…")
+            onProgress("وجدنا ${candidates.size} مسارات اجتازت الفحص الأولي؛ نتحقق من دولة الخروج فعلياً…")
         }
 
         candidates.forEachIndexed { index, candidate ->
             onProgress(
-                "اختبار المسار ${index + 1}/${candidates.size} · ${candidate.protocol.name} · " +
+                "اختبار ${index + 1}/${candidates.size} · ${candidate.protocol.name} · " +
                     "${candidate.preflightLatencyMs?.let { "${it}ms" } ?: "متاح"}"
             )
 
             val attempt = runCatching {
-                val config = SingBoxConfigBuilder.build(candidate)
-                val configFile = writeRuntimeConfig(country, config)
-                SingBoxVpnService.start(appContext, configFile.absolutePath)
-                active = true
+                withTimeout(ATTEMPT_TIMEOUT_MS) {
+                    val config = SingBoxConfigBuilder.build(candidate)
+                    val configFile = writeRuntimeConfig(country, config)
+                    SingBoxVpnService.start(appContext, configFile.absolutePath)
+                    active = true
+                    delay(TUNNEL_SETTLE_MS)
 
-                // The VPN service can be running before Android has fully switched the process route.
-                // Give the TUN a short initial settle period; ConnectionQualityClient then performs
-                // additional real-network warmup retries before it rejects the candidate.
-                delay(TUNNEL_SETTLE_MS)
-
-                val quality = qualityClient.verify(country)
-                AutomaticConnectionResult(
-                    quality = quality,
-                    mode = ConnectionEngine.SING_BOX,
-                    protocol = candidate.protocol.name,
-                    sourceId = candidate.sourceId,
-                    nodeName = candidate.displayName,
-                    preflightLatencyMs = candidate.preflightLatencyMs,
-                )
+                    val quality = qualityClient.verify(country)
+                    AutomaticConnectionResult(
+                        quality = quality,
+                        mode = ConnectionEngine.SING_BOX,
+                        protocol = candidate.protocol.name,
+                        sourceId = candidate.sourceId,
+                        nodeName = candidate.displayName,
+                        preflightLatencyMs = candidate.preflightLatencyMs,
+                    )
+                }
             }
 
             attempt.onSuccess { result ->
-                onProgress("تم اختيار مسار اجتاز فحص الدولة والسرعة والجودة.")
+                onProgress("تم التحقق من أن عنوان الخروج من ${country.displayNameAr} بنجاح.")
                 return@withContext result
             }.onFailure { error ->
-                failures += error.message.orEmpty().take(160)
-                SingBoxVpnService.stop(appContext)
+                failures += "${candidate.protocol.name}/${candidate.sourceId}: ${error.userMessage()}".take(220)
+                SingBoxVpnService.stopAndWait(appContext)
                 active = false
                 delay(BETWEEN_ATTEMPTS_MS)
             }
         }
 
-        val detail = failures.filter(String::isNotBlank).lastOrNull()
+        val recent = failures.takeLast(3)
         throw IllegalStateException(
             buildString {
                 if (candidates.isEmpty()) {
-                    append("لم يتم العثور حالياً على أي مسار مجاني حي في ${country.displayNameAr} من المصادر المتاحة.")
+                    append("لم نجد مساراً حياً قابلاً للاستخدام في ${country.displayNameAr} من المصادر الحالية.")
                 } else {
-                    append("تم اختبار ${candidates.size} مسارات حية في ${country.displayNameAr}، لكن لم يجتز أي منها التحقق الكامل من الدولة والجودة.")
+                    append("اختبرنا ${candidates.size} مسارات في ${country.displayNameAr} ولم يثبت أي مسار دولة الخروج المطلوبة حتى الآن.")
                 }
-                if (!detail.isNullOrBlank()) append(" آخر فحص: $detail")
+                if (recent.isNotEmpty()) {
+                    append(" آخر النتائج: ")
+                    append(recent.joinToString(" | "))
+                }
             }
         )
     }
@@ -97,11 +97,10 @@ class AutomaticVpnManager(context: Context) {
     }
 
     private suspend fun disconnectInternal() {
-        if (active || SingBoxVpnService.isRunning()) {
-            SingBoxVpnService.stop(appContext)
+        if (active || SingBoxVpnService.isRunning(appContext)) {
+            SingBoxVpnService.stopAndWait(appContext)
         }
         active = false
-        delay(150)
     }
 
     private fun writeRuntimeConfig(country: VpnCountry, content: String): File {
@@ -118,9 +117,15 @@ class AutomaticVpnManager(context: Context) {
         return target
     }
 
+    private fun Throwable.userMessage(): String = message
+        ?.replace('\n', ' ')
+        ?.takeIf(String::isNotBlank)
+        ?: javaClass.simpleName.ifBlank { "فشل غير معروف" }
+
     companion object {
-        private const val TUNNEL_SETTLE_MS = 1_400L
-        private const val BETWEEN_ATTEMPTS_MS = 350L
+        private const val TUNNEL_SETTLE_MS = 1_200L
+        private const val BETWEEN_ATTEMPTS_MS = 200L
+        private const val ATTEMPT_TIMEOUT_MS = 22_000L
         private const val MAX_CONFIG_BYTES = 512 * 1024
     }
 }
