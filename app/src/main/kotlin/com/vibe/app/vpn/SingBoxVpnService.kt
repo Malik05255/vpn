@@ -1,5 +1,6 @@
 package com.vibe.app.vpn
 
+import android.app.ActivityManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -7,6 +8,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.VpnService
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.ResultReceiver
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.arabvpn.app.MainActivity
@@ -29,6 +34,10 @@ import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.util.Locale
 
+/**
+ * The native sing-box engine intentionally runs in the manifest-declared `:vpn` process.
+ * A fatal Go/native crash therefore cannot terminate the main Arab VPN UI process.
+ */
 class SingBoxVpnService : VpnService(), CommandServerHandler {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val operationMutex = Mutex()
@@ -37,12 +46,10 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
     private var commandServer: CommandServer? = null
     private var activeConfigPath: String? = null
     private var mockLocation: MockLocationController? = null
+    private var running = false
 
     override fun onCreate() {
         super.onCreate()
-
-        // Native VPN initialization can fail on a specific ROM/ABI/device. Treat that as a
-        // connection failure, never as a process-fatal startup crash.
         runCatching { createNotificationChannel() }
         runCatching { MockLocationController(applicationContext) }
             .onSuccess { mockLocation = it }
@@ -58,93 +65,110 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val receiver = intent?.resultReceiver()
         when (intent?.action) {
-            ACTION_START -> {
-                val foregroundError = runCatching {
-                    startForeground(NOTIFICATION_ID, buildNotification("جاري إنشاء الاتصال الآمن…"))
-                }.exceptionOrNull()
-                if (foregroundError != null) {
-                    completeStart(Result.failure(foregroundError))
-                    stopSelf(startId)
-                    return START_NOT_STICKY
-                }
-
-                val initError = initializationError
-                if (initError != null || platform == null) {
-                    completeStart(
-                        Result.failure(
-                            IllegalStateException(
-                                "تعذر تشغيل محرك VPN على هذا الجهاز",
-                                initError,
-                            )
-                        )
-                    )
-                    runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
-                    stopSelf(startId)
-                    return START_NOT_STICKY
-                }
-
-                val path = intent.getStringExtra(EXTRA_CONFIG_PATH)
-                if (path.isNullOrBlank()) {
-                    completeStart(Result.failure(IllegalArgumentException("Missing sing-box config path")))
-                    runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
-                    stopSelf(startId)
-                    return START_NOT_STICKY
-                }
-                serviceScope.launch {
-                    operationMutex.withLock {
-                        runCatching { startRuntime(path) }
-                            .onSuccess {
-                                running = true
-                                updateForegroundNotification("VPN متصل")
-                                completeStart(Result.success(Unit))
-                            }
-                            .onFailure { error ->
-                                stopRuntime()
-                                completeStart(Result.failure(error))
-                                stopSelf(startId)
-                            }
-                    }
-                }
+            ACTION_START -> handleStart(intent, receiver, startId)
+            ACTION_SYNC_LOCATION -> handleLocationSync(intent, receiver)
+            ACTION_BACKGROUND -> if (running) {
+                updateForegroundNotification("VPN والموقع يعملان في الخلفية")
             }
-
-            ACTION_SYNC_LOCATION -> {
-                val target = intent.readLocationTarget()
-                if (target == null) {
-                    completeLocationSync(LocationSyncResult.Failed("بيانات الموقع غير مكتملة"))
-                    return START_NOT_STICKY
-                }
-                serviceScope.launch {
-                    val result = mockLocation?.start(target)
-                        ?: LocationSyncResult.Failed("خدمة الموقع غير متاحة على هذا الجهاز")
-                    if (result is LocationSyncResult.Active && running) {
-                        updateForegroundNotification("VPN والموقع متصلان · ${result.location.city}")
-                    }
-                    completeLocationSync(result)
-                }
-            }
-
-            ACTION_BACKGROUND -> {
-                if (running) {
-                    updateForegroundNotification("VPN والموقع يعملان في الخلفية")
-                }
-            }
-
-            ACTION_STOP -> {
-                serviceScope.launch {
-                    operationMutex.withLock {
-                        runCatching { mockLocation?.stop() }
-                        stopRuntime()
-                        stopSelf(startId)
-                    }
-                }
-            }
+            ACTION_STOP -> handleStop(receiver, startId)
         }
         return START_NOT_STICKY
     }
 
+    private fun handleStart(intent: Intent, receiver: ResultReceiver?, startId: Int) {
+        writeServiceState(STATE_STARTING)
+        val foregroundError = runCatching {
+            startForeground(NOTIFICATION_ID, buildNotification("جاري إنشاء الاتصال الآمن…"))
+        }.exceptionOrNull()
+        if (foregroundError != null) {
+            writeServiceState(STATE_STOPPED)
+            receiver.sendFailure(foregroundError)
+            stopSelf(startId)
+            return
+        }
+
+        val initError = initializationError
+        if (initError != null || platform == null) {
+            writeServiceState(STATE_STOPPED)
+            receiver.sendFailure(
+                IllegalStateException("تعذر تشغيل محرك VPN على هذا الجهاز", initError)
+            )
+            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+            stopSelf(startId)
+            return
+        }
+
+        val path = intent.getStringExtra(EXTRA_CONFIG_PATH)
+        if (path.isNullOrBlank()) {
+            writeServiceState(STATE_STOPPED)
+            receiver.sendFailure(IllegalArgumentException("Missing sing-box config path"))
+            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+            stopSelf(startId)
+            return
+        }
+
+        serviceScope.launch {
+            operationMutex.withLock {
+                runCatching { startRuntime(path) }
+                    .onSuccess {
+                        running = true
+                        writeServiceState(STATE_RUNNING)
+                        updateForegroundNotification("VPN متصل")
+                        receiver?.send(RESULT_START_OK, Bundle.EMPTY)
+                    }
+                    .onFailure { error ->
+                        stopRuntime()
+                        writeServiceState(STATE_STOPPED)
+                        receiver.sendFailure(error)
+                        stopSelf(startId)
+                    }
+            }
+        }
+    }
+
+    private fun handleLocationSync(intent: Intent, receiver: ResultReceiver?) {
+        if (!running) {
+            receiver?.send(RESULT_LOCATION_FAILED, messageBundle("اتصال VPN غير نشط"))
+            return
+        }
+        val target = intent.readLocationTarget()
+        if (target == null) {
+            receiver?.send(RESULT_LOCATION_FAILED, messageBundle("بيانات الموقع غير مكتملة"))
+            return
+        }
+        serviceScope.launch {
+            val result = mockLocation?.start(target)
+                ?: LocationSyncResult.Failed("خدمة الموقع غير متاحة على هذا الجهاز")
+            when (result) {
+                is LocationSyncResult.Active -> {
+                    if (running) updateForegroundNotification("VPN والموقع متصلان · ${result.location.city}")
+                    receiver?.send(RESULT_LOCATION_ACTIVE, Bundle.EMPTY)
+                }
+                LocationSyncResult.NeedsDeveloperSetup ->
+                    receiver?.send(RESULT_LOCATION_NEEDS_SETUP, Bundle.EMPTY)
+                is LocationSyncResult.Failed ->
+                    receiver?.send(RESULT_LOCATION_FAILED, messageBundle(result.reason))
+            }
+        }
+    }
+
+    private fun handleStop(receiver: ResultReceiver?, startId: Int) {
+        serviceScope.launch {
+            operationMutex.withLock {
+                runCatching { mockLocation?.stop() }
+                stopRuntime()
+                writeServiceState(STATE_STOPPED)
+                receiver?.send(RESULT_STOP_OK, Bundle.EMPTY)
+                stopSelf(startId)
+            }
+        }
+    }
+
     override fun onRevoke() {
         running = false
+        writeServiceState(STATE_STOPPED)
         serviceScope.launch {
             operationMutex.withLock {
                 runCatching { mockLocation?.stop() }
@@ -156,6 +180,8 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
     }
 
     override fun onDestroy() {
+        running = false
+        writeServiceState(STATE_STOPPED)
         runCatching { mockLocation?.stopNow() }
         runCatching { stopRuntime() }
         serviceScope.cancel()
@@ -163,8 +189,6 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
     }
 
     private fun startRuntime(configPath: String) {
-        // Keep the foreground state active while swapping the native runtime. Removing the
-        // foreground notification here could let Android kill the VPN immediately after connect.
         stopRuntime(removeForeground = false)
         val activePlatform = checkNotNull(platform) { "sing-box platform is not initialized" }
         val file = File(configPath)
@@ -173,6 +197,8 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
         }
         val content = file.readText()
         require(content.isNotBlank()) { "sing-box configuration is empty" }
+
+        Libbox.checkConfig(content)
 
         val server = CommandServer(this, activePlatform)
         runCatching {
@@ -198,12 +224,12 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
             runCatching { server.close() }
         }
         runCatching { platform?.closeTun() }
-        if (removeForeground) {
-            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
-        }
+        if (removeForeground) runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
     }
 
     override fun serviceStop() {
+        running = false
+        writeServiceState(STATE_STOPPED)
         serviceScope.launch {
             operationMutex.withLock {
                 runCatching { mockLocation?.stop() }
@@ -216,7 +242,15 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
     override fun serviceReload() {
         val path = activeConfigPath ?: return
         val content = File(path).takeIf(File::isFile)?.readText().orEmpty()
-        if (content.isNotBlank()) commandServer?.startOrReloadService(content, OverrideOptions())
+        if (content.isNotBlank()) {
+            runCatching {
+                Libbox.checkConfig(content)
+                commandServer?.startOrReloadService(content, OverrideOptions())
+            }.onFailure {
+                writeServiceState(STATE_STOPPED)
+                serviceStop()
+            }
+        }
     }
 
     override fun getSystemProxyStatus(): SystemProxyStatus = SystemProxyStatus().apply {
@@ -283,12 +317,26 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
         }
     }
 
+    @Suppress("DEPRECATION")
+    private fun Intent.resultReceiver(): ResultReceiver? = getParcelableExtra(EXTRA_RESULT_RECEIVER)
+
+    private fun writeServiceState(state: String) {
+        runCatching {
+            stateFile(applicationContext).apply {
+                parentFile?.mkdirs()
+                writeText(state)
+            }
+        }
+    }
+
     companion object {
         private const val ACTION_START = "com.malik05255.arabvpn.vpn.START_SING_BOX"
         private const val ACTION_STOP = "com.malik05255.arabvpn.vpn.STOP_SING_BOX"
         private const val ACTION_SYNC_LOCATION = "com.malik05255.arabvpn.vpn.SYNC_LOCATION"
         private const val ACTION_BACKGROUND = "com.malik05255.arabvpn.vpn.BACKGROUND_MODE"
         private const val EXTRA_CONFIG_PATH = "config_path"
+        private const val EXTRA_RESULT_RECEIVER = "result_receiver"
+        private const val EXTRA_ERROR_MESSAGE = "error_message"
         private const val EXTRA_CITY = "location_city"
         private const val EXTRA_LATITUDE = "location_latitude"
         private const val EXTRA_LONGITUDE = "location_longitude"
@@ -297,42 +345,68 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
         private const val NOTIFICATION_CHANNEL = "arab_vpn_connection"
         private const val NOTIFICATION_ID = 7021
         private const val MAX_CONFIG_BYTES = 512L * 1024L
+        private const val IPC_TIMEOUT_MS = 12_000L
+        private const val STOP_TIMEOUT_MS = 4_000L
 
-        @Volatile
-        private var running = false
+        private const val RESULT_START_OK = 10
+        private const val RESULT_FAILED = 11
+        private const val RESULT_LOCATION_ACTIVE = 20
+        private const val RESULT_LOCATION_NEEDS_SETUP = 21
+        private const val RESULT_LOCATION_FAILED = 22
+        private const val RESULT_STOP_OK = 30
 
-        @Volatile
-        private var pendingStart: CompletableDeferred<Result<Unit>>? = null
-
-        @Volatile
-        private var pendingLocationSync: CompletableDeferred<LocationSyncResult>? = null
+        private const val STATE_STARTING = "starting"
+        private const val STATE_RUNNING = "running"
+        private const val STATE_STOPPED = "stopped"
+        private const val STATE_FILE_NAME = "service.state"
 
         @Volatile
         private var libboxInitialized = false
 
         suspend fun start(context: Context, configPath: String) {
             val deferred = CompletableDeferred<Result<Unit>>()
-            pendingStart?.cancel()
-            pendingStart = deferred
+            val receiver = resultReceiver { code, data ->
+                when (code) {
+                    RESULT_START_OK -> deferred.complete(Result.success(Unit))
+                    RESULT_FAILED -> deferred.complete(
+                        Result.failure(IllegalStateException(data?.getString(EXTRA_ERROR_MESSAGE) ?: "تعذر تشغيل محرك VPN"))
+                    )
+                }
+            }
             val intent = Intent(context, SingBoxVpnService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_CONFIG_PATH, configPath)
+                putExtra(EXTRA_RESULT_RECEIVER, receiver)
             }
             try {
                 ContextCompat.startForegroundService(context, intent)
-                withTimeout(12_000) { deferred.await() }.getOrThrow()
-            } finally {
-                if (pendingStart === deferred) pendingStart = null
+                withTimeout(IPC_TIMEOUT_MS) { deferred.await() }.getOrThrow()
+            } catch (error: Throwable) {
+                if (!isVpnProcessAlive(context)) {
+                    markStopped(context)
+                    throw IllegalStateException("توقف محرك VPN أثناء تشغيل المسار؛ تم عزله عن التطبيق وسيتم تجربة مسار آخر.", error)
+                }
+                throw error
             }
         }
 
         suspend fun syncLocation(context: Context, target: CountryLocation): LocationSyncResult {
-            if (!running) return LocationSyncResult.Failed("اتصال VPN غير نشط")
+            if (!isRunning(context)) return LocationSyncResult.Failed("اتصال VPN غير نشط")
             val deferred = CompletableDeferred<LocationSyncResult>()
-            pendingLocationSync?.cancel()
-            pendingLocationSync = deferred
+            val receiver = resultReceiver { code, data ->
+                val result = when (code) {
+                    RESULT_LOCATION_ACTIVE -> LocationSyncResult.Active(target)
+                    RESULT_LOCATION_NEEDS_SETUP -> LocationSyncResult.NeedsDeveloperSetup
+                    RESULT_LOCATION_FAILED -> LocationSyncResult.Failed(
+                        data?.getString(EXTRA_ERROR_MESSAGE) ?: "تعذر تشغيل الموقع في الخلفية"
+                    )
+                    else -> null
+                }
+                if (result != null) deferred.complete(result)
+            }
             val intent = Intent(context, SingBoxVpnService::class.java).apply {
                 action = ACTION_SYNC_LOCATION
+                putExtra(EXTRA_RESULT_RECEIVER, receiver)
                 putExtra(EXTRA_CITY, target.city)
                 putExtra(EXTRA_LATITUDE, target.latitude)
                 putExtra(EXTRA_LONGITUDE, target.longitude)
@@ -343,14 +417,34 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
                 context.startService(intent)
                 withTimeout(6_000) { deferred.await() }
             } catch (error: Throwable) {
+                if (!isVpnProcessAlive(context)) markStopped(context)
                 LocationSyncResult.Failed(error.message ?: "تعذر تشغيل الموقع في الخلفية")
-            } finally {
-                if (pendingLocationSync === deferred) pendingLocationSync = null
             }
         }
 
+        suspend fun stopAndWait(context: Context) {
+            if (!isVpnProcessAlive(context)) {
+                markStopped(context)
+                return
+            }
+            val deferred = CompletableDeferred<Unit>()
+            val receiver = resultReceiver { code, _ ->
+                if (code == RESULT_STOP_OK) deferred.complete(Unit)
+            }
+            runCatching {
+                context.startService(
+                    Intent(context, SingBoxVpnService::class.java).apply {
+                        action = ACTION_STOP
+                        putExtra(EXTRA_RESULT_RECEIVER, receiver)
+                    }
+                )
+                withTimeout(STOP_TIMEOUT_MS) { deferred.await() }
+            }
+            markStopped(context)
+        }
+
         fun enterBackgroundMode(context: Context) {
-            if (!running) return
+            if (!isRunning(context)) return
             runCatching {
                 context.startService(
                     Intent(context, SingBoxVpnService::class.java).apply { action = ACTION_BACKGROUND }
@@ -358,25 +452,45 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
             }
         }
 
-        fun stop(context: Context) {
-            running = false
-            runCatching {
-                context.startService(
-                    Intent(context, SingBoxVpnService::class.java).apply { action = ACTION_STOP }
-                )
+        fun isRunning(context: Context): Boolean {
+            val state = runCatching { stateFile(context).takeIf(File::isFile)?.readText()?.trim() }.getOrNull()
+            if (state != STATE_RUNNING) return false
+            if (!isVpnProcessAlive(context)) {
+                markStopped(context)
+                return false
             }
+            return true
         }
 
-        fun isRunning(): Boolean = running
-
-        private fun completeStart(result: Result<Unit>) {
-            pendingStart?.complete(result)
-            pendingStart = null
+        private fun isVpnProcessAlive(context: Context): Boolean {
+            val expectedName = "${context.packageName}:vpn"
+            val activityManager = context.getSystemService(ActivityManager::class.java) ?: return false
+            return activityManager.runningAppProcesses.orEmpty().any { it.processName == expectedName }
         }
 
-        private fun completeLocationSync(result: LocationSyncResult) {
-            pendingLocationSync?.complete(result)
-            pendingLocationSync = null
+        private fun stateFile(context: Context): File =
+            File(File(context.filesDir, "vpn-runtime").apply { mkdirs() }, STATE_FILE_NAME)
+
+        private fun markStopped(context: Context) {
+            runCatching { stateFile(context).writeText(STATE_STOPPED) }
+        }
+
+        private fun resultReceiver(onResult: (Int, Bundle?) -> Unit): ResultReceiver =
+            object : ResultReceiver(Handler(Looper.getMainLooper())) {
+                override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
+                    onResult(resultCode, resultData)
+                }
+            }
+
+        private fun ResultReceiver?.sendFailure(error: Throwable) {
+            this?.send(
+                RESULT_FAILED,
+                messageBundle(error.message ?: error.javaClass.simpleName.ifBlank { "تعذر تشغيل محرك VPN" })
+            )
+        }
+
+        private fun messageBundle(message: String): Bundle = Bundle().apply {
+            putString(EXTRA_ERROR_MESSAGE, message.take(400))
         }
 
         @Synchronized

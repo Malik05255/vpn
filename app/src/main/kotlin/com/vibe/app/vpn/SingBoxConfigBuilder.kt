@@ -15,9 +15,18 @@ object SingBoxConfigBuilder {
     private val json = Json { ignoreUnknownKeys = true }
 
     fun build(candidate: FreeVpnCandidate): String {
-        val outbound = json.parseToJsonElement(candidate.outboundJson).jsonObject
-        require(outbound["tag"]?.toString()?.contains(OUTBOUND_TAG) == true) {
+        val sourceOutbound = json.parseToJsonElement(candidate.outboundJson).jsonObject
+        require(sourceOutbound["tag"]?.toString()?.contains(OUTBOUND_TAG) == true) {
             "Candidate outbound is missing the managed tag"
+        }
+
+        // Proxy hostnames must be resolved before the proxy exists. Giving the outbound an explicit
+        // local bootstrap resolver prevents the circular dependency where tunneled DNS needs the
+        // proxy while the proxy itself still needs DNS. All device/app DNS remains on secure-dns.
+        val outbound = buildJsonObject {
+            sourceOutbound.forEach { (key, value) -> put(key, value) }
+            put("domain_resolver", BOOTSTRAP_DNS_TAG)
+            put("connect_timeout", "7s")
         }
 
         val root = buildJsonObject {
@@ -30,10 +39,19 @@ object SingBoxConfigBuilder {
                 putJsonArray("servers") {
                     add(
                         buildJsonObject {
-                            put("type", "tls")
+                            put("type", "local")
+                            put("tag", BOOTSTRAP_DNS_TAG)
+                        }
+                    )
+                    add(
+                        buildJsonObject {
+                            // DoH on 443 works through far more public HTTP/SOCKS relays than DoT
+                            // on 853. The request itself is still detoured through country-proxy.
+                            put("type", "https")
                             put("tag", DNS_TAG)
                             put("server", "1.1.1.1")
-                            put("server_port", 853)
+                            put("server_port", 443)
+                            put("path", "/dns-query")
                             put("detour", OUTBOUND_TAG)
                             putJsonObject("tls") {
                                 put("enabled", true)
@@ -82,7 +100,7 @@ object SingBoxConfigBuilder {
             putJsonObject("route") {
                 put("auto_detect_interface", true)
                 put("final", OUTBOUND_TAG)
-                put("default_domain_resolver", DNS_TAG)
+                put("default_domain_resolver", BOOTSTRAP_DNS_TAG)
                 putJsonArray("rules") {
                     add(
                         buildJsonObject {
@@ -97,6 +115,7 @@ object SingBoxConfigBuilder {
     }
 
     private const val OUTBOUND_TAG = "country-proxy"
+    private const val BOOTSTRAP_DNS_TAG = "bootstrap-dns"
     private const val DNS_TAG = "secure-dns"
     private const val TUN_TAG = "country-tun"
 }

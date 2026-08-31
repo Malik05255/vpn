@@ -10,8 +10,10 @@ class ArabVpnApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        // Updates are useful, but they must never be able to prevent the VPN UI from starting.
-        // Defer initialization until after the first frame and isolate any OEM/WorkManager issue.
+        // The native VPN runtime uses its own :vpn process. WorkManager/update initialization must
+        // stay in the main UI process so a tunnel restart cannot spawn duplicate schedulers.
+        if (Application.getProcessName() != packageName) return
+
         Handler(Looper.getMainLooper()).postDelayed(
             {
                 runCatching { UpdateScheduler.initialize(this) }

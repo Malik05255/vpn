@@ -60,7 +60,9 @@
             android:name="com.vibe.app.vpn.SingBoxVpnService"
             android:exported="false"
             android:foregroundServiceType="specialUse"
-            android:permission="android.permission.BIND_VPN_SERVICE">
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:process=":vpn"
+            android:stopWithTask="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="full-device VPN tunnel selected explicitly by the user" />
