@@ -83,22 +83,15 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: |
-            set -eu
-            APK="arabvpn/build/outputs/apk/debug/arabvpn-debug.apk"
             adb logcat -c
-            adb install -r "$APK"
+            adb install -r arabvpn/build/outputs/apk/debug/arabvpn-debug.apk
             adb shell am start -W -n com.malik05255.arabvpn/com.arabvpn.app.MainActivity
             sleep 5
-            if ! adb shell pidof com.malik05255.arabvpn >/dev/null; then
-              echo "Arab VPN process died during startup"
-              adb logcat -d -v threadtime | tail -500
-              exit 1
-            fi
-            if adb logcat -d -v threadtime | grep -A80 -B20 -E "FATAL EXCEPTION|Process: com.malik05255.arabvpn"; then
-              echo "Fatal runtime crash detected"
-              exit 1
-            fi
-            adb shell dumpsys activity activities | grep -F "com.malik05255.arabvpn" >/dev/null
+            adb shell pidof com.malik05255.arabvpn
+            adb logcat -d -v threadtime > /tmp/arabvpn-logcat.txt
+            if grep -A80 -B20 -E "FATAL EXCEPTION|Process: com.malik05255.arabvpn" /tmp/arabvpn-logcat.txt; then echo "Fatal runtime crash detected"; exit 1; fi
+            adb shell dumpsys activity activities > /tmp/arabvpn-activities.txt
+            grep -F "com.malik05255.arabvpn" /tmp/arabvpn-activities.txt
 
   unit-tests:
     name: Arab VPN Unit Tests
