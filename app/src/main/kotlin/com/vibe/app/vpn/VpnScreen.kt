@@ -66,7 +66,7 @@ fun VpnScreen(
                 Header()
 
                 Text(
-                    text = "اختر الدولة التي تريد أن يخرج اتصال الإنترنت منها",
+                    text = "اختر الدولة، والتطبيق يبحث تلقائياً عن أفضل خادم مجاني متاح ثم يتحقق منه قبل إعلان الاتصال.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -75,16 +75,19 @@ fun VpnScreen(
                     CountryCard(
                         country = country,
                         selected = state.selectedCountry == country,
-                        configured = country in state.configuredCountries,
+                        hasPrivateFallback = country in state.configuredCountries,
                         enabled = state.connectionStatus == ConnectionStatus.DISCONNECTED,
                         onClick = { onCountrySelected(country) },
                     )
                 }
 
                 state.selectedCountry?.let { selected ->
-                    val configured = selected in state.configuredCountries
-                    if (!configured && state.connectionStatus == ConnectionStatus.DISCONNECTED) {
-                        SetupCard(country = selected, onImportProfile = onImportProfile)
+                    if (state.connectionStatus == ConnectionStatus.DISCONNECTED) {
+                        SetupCard(
+                            country = selected,
+                            hasPrivateFallback = selected in state.configuredCountries,
+                            onImportProfile = onImportProfile,
+                        )
                     }
                 }
 
@@ -93,6 +96,7 @@ fun VpnScreen(
 
                 state.ipLocation?.let { location ->
                     ConnectionDetails(
+                        state = state,
                         country = state.selectedCountry,
                         location = location,
                         quality = state.qualityReport,
@@ -142,7 +146,7 @@ private fun Header() {
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                text = "اتصال موثّق مع فحص جودة فعلي",
+                text = "اختيار تلقائي · فحص دولة · فحص جودة",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -154,7 +158,7 @@ private fun Header() {
 private fun CountryCard(
     country: VpnCountry,
     selected: Boolean,
-    configured: Boolean,
+    hasPrivateFallback: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
@@ -193,15 +197,19 @@ private fun CountryCard(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = if (configured) "مسار VPN متاح" else "جارٍ توفير المسار تلقائياً",
+                    text = if (hasPrivateFallback) {
+                        "بحث تلقائي + WireGuard احتياطي"
+                    } else {
+                        "بحث تلقائي عن أفضل خادم مجاني"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (configured) {
+            if (selected) {
                 Icon(
                     imageVector = Icons.Rounded.CheckCircle,
-                    contentDescription = "متاح",
+                    contentDescription = "الدولة المحددة",
                     tint = MaterialTheme.colorScheme.primary,
                 )
             }
@@ -210,7 +218,11 @@ private fun CountryCard(
 }
 
 @Composable
-private fun SetupCard(country: VpnCountry, onImportProfile: () -> Unit) {
+private fun SetupCard(
+    country: VpnCountry,
+    hasPrivateFallback: Boolean,
+    onImportProfile: () -> Unit,
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -226,20 +238,24 @@ private fun SetupCard(country: VpnCountry, onImportProfile: () -> Unit) {
             ) {
                 Icon(Icons.Rounded.Settings, contentDescription = null)
                 Text(
-                    text = "مسار احتياطي لـ ${country.displayNameAr}",
+                    text = "احتياطي خاص لـ ${country.displayNameAr}",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
             }
             Text(
-                text = "البحث التلقائي المجاني هو المسار الأساسي. ويمكن إبقاء ملف WireGuard خاص بك كخيار احتياطي؛ يُحفظ داخل مساحة التطبيق فقط.",
+                text = if (hasPrivateFallback) {
+                    "يوجد WireGuard احتياطي محفوظ على الجهاز. سيستخدمه التطبيق فقط إذا لم يجد مساراً عاماً يحقق شروط الجودة."
+                } else {
+                    "هذا اختياري فقط. البحث المجاني التلقائي يعمل من دون ملف، ويمكنك إضافة WireGuard خاص كمسار احتياطي لاحقاً."
+                },
                 style = MaterialTheme.typography.bodyMedium,
             )
             OutlinedButton(
                 modifier = Modifier.fillMaxWidth(),
                 onClick = onImportProfile,
             ) {
-                Text("استيراد WireGuard احتياطي")
+                Text(if (hasPrivateFallback) "استبدال WireGuard الاحتياطي" else "إضافة WireGuard احتياطي")
             }
         }
     }
@@ -271,6 +287,7 @@ private fun MessageCard(message: String, isError: Boolean) {
 
 @Composable
 private fun ConnectionDetails(
+    state: VpnUiState,
     country: VpnCountry?,
     location: IpLocation,
     quality: ConnectionQualityReport?,
@@ -307,8 +324,14 @@ private fun ConnectionDetails(
             DetailRow("الدولة المطلوبة", country?.let { "${it.flag} ${it.displayNameAr}" }.orEmpty())
             DetailRow("الدولة المكتشفة", location.country.ifBlank { location.countryCode })
             DetailRow("عنوان IP العام", location.ip.ifBlank { "غير متاح" })
+            state.protocol?.let { DetailRow("البروتوكول", it) }
+            state.engine?.let {
+                DetailRow("محرك الاتصال", if (it == ConnectionEngine.SING_BOX) "sing-box" else "WireGuard")
+            }
+            state.nodeName?.takeIf(String::isNotBlank)?.let { DetailRow("المسار المختار", it.take(42)) }
+            state.preflightLatencyMs?.let { DetailRow("استجابة الخادم قبل النفق", "$it ms") }
             quality?.let { report ->
-                DetailRow("زمن الاستجابة", "${report.medianLatencyMs} ms")
+                DetailRow("زمن الاستجابة الفعلي", "${report.medianLatencyMs} ms")
                 DetailRow("سرعة التحميل المقاسة", "${String.format(Locale.US, "%.1f", report.downloadMbps)} Mbps")
                 DetailRow("التحقق الجغرافي", if (report.geoVerified) "مصدران متطابقان ✓" else "غير مكتمل")
             }
@@ -322,7 +345,7 @@ private fun ConnectionDetails(
                     modifier = Modifier.size(18.dp),
                 )
                 Text(
-                    text = "DNS يمر داخل نفق الـVPN ولا يُعتبر الاتصال ناجحاً قبل اجتياز فحص الجودة.",
+                    text = "DNS يمر داخل النفق، ولا تظهر حالة «متصل» إلا بعد اجتياز فحص الجودة.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -350,7 +373,6 @@ private fun ConnectionButton(
     onDisconnect: () -> Unit,
 ) {
     val selected = state.selectedCountry
-    val configured = selected != null && selected in state.configuredCountries
     val busy = state.connectionStatus == ConnectionStatus.CONNECTING ||
         state.connectionStatus == ConnectionStatus.DISCONNECTING
     val connected = state.connectionStatus == ConnectionStatus.CONNECTED
@@ -359,7 +381,7 @@ private fun ConnectionButton(
         modifier = Modifier
             .fillMaxWidth()
             .height(58.dp),
-        enabled = !busy && (connected || configured),
+        enabled = !busy && (connected || selected != null),
         onClick = if (connected) onDisconnect else onConnect,
         colors = if (connected) {
             ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
@@ -388,10 +410,10 @@ private fun ConnectionButton(
                 ConnectionStatus.CONNECTING -> "جاري البحث والفحص والاتصال..."
                 ConnectionStatus.CONNECTED -> "فصل الاتصال"
                 ConnectionStatus.DISCONNECTING -> "جاري الفصل..."
-                ConnectionStatus.DISCONNECTED -> when {
-                    selected == null -> "اختر دولة أولاً"
-                    !configured -> "جارٍ تجهيز الاتصال المجاني"
-                    else -> "اتصال عبر ${selected.displayNameAr}"
+                ConnectionStatus.DISCONNECTED -> if (selected == null) {
+                    "اختر دولة أولاً"
+                } else {
+                    "ابحث واتصل عبر ${selected.displayNameAr}"
                 }
             },
             fontWeight = FontWeight.Bold,
@@ -413,7 +435,7 @@ private fun QualityPolicyNote() {
 @Composable
 private fun PrivacyNote() {
     Text(
-        text = "ملاحظة: الـVPN يغيّر مسار الإنترنت وعنوان IP وDNS. لا يغيّر GPS أو شريحة SIM أو المنطقة الزمنية للجهاز.",
+        text = "الـVPN يغيّر مسار الإنترنت وعنوان IP وDNS فقط. لا يغيّر GPS أو شريحة SIM أو المنطقة الزمنية للجهاز.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         textAlign = TextAlign.Center,
