@@ -12,15 +12,30 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 class IpLocationClient {
-    suspend fun check(): IpLocation = withContext(Dispatchers.IO) {
+    /**
+     * If an expected country is supplied, do not stop at the first healthy GeoIP provider when it
+     * disagrees. Try the independent fallback first. This avoids rejecting a real tunnel because a
+     * single GeoIP database has stale country ownership data for the exit IP.
+     */
+    suspend fun check(expectedCountryCode: String? = null): IpLocation = withContext(Dispatchers.IO) {
         var lastError: Throwable? = null
+        var firstValid: IpLocation? = null
         for (provider in providers) {
             val result = runCatching { provider() }
-            result.getOrNull()?.takeIf { it.ip.isNotBlank() && it.countryCode.isNotBlank() }?.let {
-                return@withContext it
+            val location = result.getOrNull()
+                ?.takeIf { it.ip.isNotBlank() && it.countryCode.isNotBlank() }
+            if (location != null) {
+                if (firstValid == null) firstValid = location
+                if (
+                    expectedCountryCode.isNullOrBlank() ||
+                    location.countryCode.equals(expectedCountryCode, ignoreCase = true)
+                ) {
+                    return@withContext location
+                }
             }
             lastError = result.exceptionOrNull() ?: lastError
         }
+        firstValid?.let { return@withContext it }
         throw lastError ?: IllegalStateException("تعذر التحقق من عنوان IP الخارجي.")
     }
 
@@ -66,7 +81,7 @@ class IpLocationClient {
             instanceFollowRedirects = true
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Cache-Control", "no-cache")
-            setRequestProperty("User-Agent", "ArabVPN/1.0 Android")
+            setRequestProperty("User-Agent", "ArabVPN/1.2 Android")
         }
         return try {
             val code = connection.responseCode
