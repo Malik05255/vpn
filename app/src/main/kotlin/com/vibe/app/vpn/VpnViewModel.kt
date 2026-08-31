@@ -30,6 +30,15 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     fun prepareVpnPermission(): Intent? = wireGuard.preparePermissionIntent()
 
+    fun onVpnPermissionDenied() {
+        _uiState.update {
+            it.copy(
+                errorMessage = "يجب السماح للتطبيق بإنشاء اتصال VPN حتى يتم تشغيل النفق.",
+                noticeMessage = null,
+            )
+        }
+    }
+
     fun connectAuthorized() {
         val country = _uiState.value.selectedCountry ?: return
         if (!profileStore.hasProfile(country)) {
@@ -131,10 +140,6 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-    }
-
-    fun clearMessages() {
-        _uiState.update { it.copy(errorMessage = null, noticeMessage = null) }
     }
 
     private fun configuredCountries(): Set<VpnCountry> = VpnCountry.entries
