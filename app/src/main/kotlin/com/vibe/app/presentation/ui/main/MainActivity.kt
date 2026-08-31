@@ -12,8 +12,8 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.vibe.app.vpn.VpnScreen
 import com.vibe.app.vpn.VpnViewModel
 import dagger.hilt.android.AndroidEntryPoint
@@ -41,12 +41,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            val profilePicker = rememberLauncherForActivityResult(
-                contract = ActivityResultContracts.OpenDocument(),
-            ) { uri ->
-                if (uri != null) vpnViewModel.importProfile(uri)
-            }
-
             MaterialTheme(
                 colorScheme = if (darkTheme) darkColorScheme() else lightColorScheme(),
             ) {
@@ -62,17 +56,16 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onDisconnect = vpnViewModel::disconnect,
-                    onImportProfile = {
-                        profilePicker.launch(
-                            arrayOf(
-                                "text/plain",
-                                "application/octet-stream",
-                                "application/x-wireguard-profile",
-                            )
-                        )
+                    onOpenLocationSettings = {
+                        runCatching { startActivity(vpnViewModel.mockLocationSettingsIntent()) }
                     },
                 )
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        vpnViewModel.retryLocationSyncIfNeeded()
     }
 }
