@@ -16,18 +16,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.LocationOn
-import androidx.compose.material.icons.rounded.PowerSettingsNew
-import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -109,11 +103,11 @@ private fun Header() {
             color = MaterialTheme.colorScheme.primaryContainer,
         ) {
             Box(modifier = Modifier.size(58.dp), contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = Icons.Rounded.Shield,
-                    contentDescription = null,
-                    modifier = Modifier.size(32.dp),
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                Text(
+                    text = "◆",
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
             }
         }
@@ -163,7 +157,12 @@ private fun CountryCard(
                 )
             }
             if (selected) {
-                Icon(Icons.Rounded.CheckCircle, contentDescription = "محدد", tint = MaterialTheme.colorScheme.primary)
+                Text(
+                    text = "✓",
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
         }
     }
@@ -180,7 +179,7 @@ private fun LocationSetupCard(onOpenLocationSettings: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Rounded.LocationOn, contentDescription = null)
+                Text("●", fontSize = 18.sp, color = MaterialTheme.colorScheme.primary)
                 Text("إعداد الموقع لمرة واحدة", fontWeight = FontWeight.Bold)
             }
             Text(
@@ -220,7 +219,7 @@ private fun ConnectionDetails(state: VpnUiState, location: IpLocation) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
     ) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("الاتصال موثّق", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("الاتصال موثّق ✓", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             HorizontalDivider()
             DetailRow("الدولة", state.selectedCountry?.let { "${it.flag} ${it.displayNameAr}" }.orEmpty())
             DetailRow("IP", location.ip.ifBlank { "غير متاح" })
@@ -279,7 +278,7 @@ private fun ConnectionButton(state: VpnUiState, onConnect: () -> Unit, onDisconn
             )
             Spacer(Modifier.size(10.dp))
         } else {
-            Icon(Icons.Rounded.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(22.dp))
+            Text("●", fontSize = 20.sp, fontWeight = FontWeight.Black)
             Spacer(Modifier.size(8.dp))
         }
         Text(
