@@ -11,9 +11,9 @@ import kotlin.math.roundToLong
 /**
  * Post-connect verification gate.
  *
- * Country identity is a hard requirement: both independent geo signals must match. Public relay
- * performance is volatile, so latency/throughput are measured and reported but no longer turn a
- * country-correct tunnel into a false "no connection" result.
+ * The exit country remains a hard requirement, but one stale GeoIP database must not reject a
+ * valid tunnel. A connection is accepted only when at least two of three independent observations
+ * report the requested country: IpLocationClient (ipwho/ipapi), Cloudflare trace, and country.is.
  */
 class ConnectionQualityClient(
     private val ipLocationClient: IpLocationClient = IpLocationClient(),
@@ -43,20 +43,54 @@ class ConnectionQualityClient(
         )
     }
 
-    private suspend fun verifyGeoWithWarmup(expectedCountry: VpnCountry): Pair<IpLocation, TraceResult> {
+    private suspend fun verifyGeoWithWarmup(expectedCountry: VpnCountry): Pair<IpLocation, GeoSignal> {
         var lastError: Throwable? = null
         repeat(GEO_WARMUP_ATTEMPTS) { attemptIndex ->
             val attempt = runCatching {
-                val primary = ipLocationClient.check()
-                require(primary.countryCode.equals(expectedCountry.code, ignoreCase = true)) {
-                    "عنوان الخروج ليس من ${expectedCountry.displayNameAr}. ظهر من ${primary.country.ifBlank { primary.countryCode.ifBlank { "دولة أخرى" } }}."
+                val primary = ipLocationClient.check(expectedCountry.code)
+                val cloudflare = runCatching { readCloudflareTrace() }.getOrNull()
+                val countryIs = runCatching { readCountryIs() }.getOrNull()
+
+                val observedCodes = listOfNotNull(
+                    primary.countryCode.takeIf(String::isNotBlank),
+                    cloudflare?.countryCode?.takeIf(String::isNotBlank),
+                    countryIs?.countryCode?.takeIf(String::isNotBlank),
+                )
+                val matches = observedCodes.count {
+                    it.equals(expectedCountry.code, ignoreCase = true)
+                }
+                require(matches >= REQUIRED_COUNTRY_MATCHES) {
+                    "لم يتحقق إجماع دولة الخروج لـ ${expectedCountry.displayNameAr}. " +
+                        "الإشارات=${observedCodes.joinToString(",").ifBlank { "غير متاحة" }}"
                 }
 
-                val secondary = readCloudflareTrace()
-                require(secondary.countryCode.equals(expectedCountry.code, ignoreCase = true)) {
-                    "فشل التحقق المزدوج من الدولة: Cloudflare اكتشف ${secondary.countryCode.ifBlank { "دولة أخرى" }} بدل ${expectedCountry.code}."
+                // Normally the rich provider matches. If its GeoIP database is the one stale
+                // signal while both network observers match, do not use its wrong coordinates for
+                // mock-location sync; keep the verified country/IP and let CountryLocationResolver
+                // use the country's safe default coordinates.
+                val trustedPrimary = if (
+                    primary.countryCode.equals(expectedCountry.code, ignoreCase = true)
+                ) {
+                    primary
+                } else {
+                    val trustedIp = listOfNotNull(cloudflare, countryIs)
+                        .firstOrNull { it.countryCode.equals(expectedCountry.code, ignoreCase = true) }
+                        ?.ip
+                        .orEmpty()
+                    IpLocation(
+                        ip = trustedIp.ifBlank { primary.ip },
+                        countryCode = expectedCountry.code,
+                        country = expectedCountry.displayNameEn,
+                    )
                 }
-                primary to secondary
+
+                val secondary = listOfNotNull(cloudflare, countryIs)
+                    .firstOrNull { it.countryCode.equals(expectedCountry.code, ignoreCase = true) }
+                    ?: cloudflare
+                    ?: countryIs
+                    ?: GeoSignal(ip = primary.ip, countryCode = primary.countryCode)
+
+                trustedPrimary to secondary
             }
 
             attempt.getOrNull()?.let { return it }
@@ -66,8 +100,8 @@ class ConnectionQualityClient(
         throw lastError ?: IllegalStateException("تعذر التحقق من دولة الخروج.")
     }
 
-    private fun readCloudflareTrace(): TraceResult {
-        val connection = open(CLOUDFLARE_TRACE_URL, connectTimeoutMs = 7_000, readTimeoutMs = 7_000)
+    private fun readCloudflareTrace(): GeoSignal {
+        val connection = open(CLOUDFLARE_TRACE_URL, connectTimeoutMs = GEO_TIMEOUT_MS, readTimeoutMs = GEO_TIMEOUT_MS)
         return try {
             val code = connection.responseCode
             require(code in 200..299) { "Cloudflare geo verification failed with HTTP $code" }
@@ -77,10 +111,25 @@ class ConnectionQualityClient(
                     if (index <= 0) null else line.substring(0, index) to line.substring(index + 1)
                 }.toMap()
             }
-            TraceResult(
+            GeoSignal(
                 ip = values["ip"].orEmpty(),
                 countryCode = values["loc"].orEmpty(),
             )
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun readCountryIs(): GeoSignal {
+        val connection = open(COUNTRY_IS_URL, connectTimeoutMs = GEO_TIMEOUT_MS, readTimeoutMs = GEO_TIMEOUT_MS)
+        return try {
+            val code = connection.responseCode
+            require(code in 200..299) { "country.is verification failed with HTTP $code" }
+            val body = connection.inputStream.bufferedReader().use { it.readText().take(8_192) }
+            val ip = JSON_IP_REGEX.find(body)?.groupValues?.getOrNull(1).orEmpty()
+            val country = JSON_COUNTRY_REGEX.find(body)?.groupValues?.getOrNull(1).orEmpty()
+            require(ip.isNotBlank() && country.isNotBlank()) { "country.is returned incomplete geo data" }
+            GeoSignal(ip = ip, countryCode = country)
         } finally {
             connection.disconnect()
         }
@@ -140,10 +189,10 @@ class ConnectionQualityClient(
             instanceFollowRedirects = true
             setRequestProperty("Cache-Control", "no-cache")
             setRequestProperty("Accept", "*/*")
-            setRequestProperty("User-Agent", "ArabVPN/1.0 Android")
+            setRequestProperty("User-Agent", "ArabVPN/1.2 Android")
         }
 
-    private data class TraceResult(
+    private data class GeoSignal(
         val ip: String,
         val countryCode: String,
     )
@@ -154,16 +203,21 @@ class ConnectionQualityClient(
         const val UNAVAILABLE_LATENCY_MS = -1L
         const val UNAVAILABLE_DOWNLOAD_MBPS = -1.0
 
-        private const val GEO_WARMUP_ATTEMPTS = 5
-        private const val GEO_WARMUP_RETRY_MS = 1_000L
+        private const val REQUIRED_COUNTRY_MATCHES = 2
+        private const val GEO_WARMUP_ATTEMPTS = 4
+        private const val GEO_WARMUP_RETRY_MS = 900L
+        private const val GEO_TIMEOUT_MS = 6_000
         private const val LATENCY_SAMPLES = 3
         private const val LATENCY_TIMEOUT_MS = 4_000
         private const val SPEED_TIMEOUT_MS = 12_000
         private const val SPEED_TEST_BYTES = 512 * 1024L
 
         private const val CLOUDFLARE_TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+        private const val COUNTRY_IS_URL = "https://api.country.is/"
         private const val CLOUDFLARE_204_URL = "https://cp.cloudflare.com/generate_204"
         private const val CLOUDFLARE_SPEED_URL = "https://speed.cloudflare.com/__down"
+        private val JSON_IP_REGEX = Regex("\\\"ip\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
+        private val JSON_COUNTRY_REGEX = Regex("\\\"country\\\"\\s*:\\s*\\\"([A-Za-z]{2})\\\"")
     }
 }
 
