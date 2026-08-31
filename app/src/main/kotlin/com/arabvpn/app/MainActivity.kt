@@ -107,27 +107,32 @@ class MainActivity : ComponentActivity() {
             val state = vpnViewModel.uiState.collectAsStateWithLifecycle().value
             val checkGeneration = updateCheckGeneration.collectAsStateWithLifecycle().value
             val darkTheme = isSystemInDarkTheme()
-            var availableUpdate by remember { mutableStateOf<UpdateManifest?>(null) }
+            val updateClient = remember { GitHubUpdateClient(this@MainActivity) }
+
+            // Cached discovery renders synchronously. If the background worker already saw a new
+            // release, the dialog is present on the first composed frame instead of waiting on GitHub.
+            val cachedUpdate = remember {
+                updateClient.cachedManifest()
+                    ?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }
+            }
+            var availableUpdate by remember { mutableStateOf<UpdateManifest?>(cachedUpdate) }
             var dismissedUpdateVersion by remember { mutableStateOf<Int?>(null) }
 
-            // Check immediately and on every return to the app. If an update exists, surface both
-            // an in-app dialog and an Android notification. The notification remains useful when
-            // the user chooses "لاحقاً" in the dialog.
+            // Refresh on every return. The fast path is a single fixed-manifest request; network
+            // errors never erase a valid cached update that is already visible to the user.
             LaunchedEffect(checkGeneration) {
-                val update = runCatching {
+                val freshUpdate = runCatching {
                     withContext(Dispatchers.IO) {
-                        GitHubUpdateClient().fetchLatestManifest()
+                        updateClient.fetchLatestManifest()
                             ?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }
                     }
                 }.getOrNull()
 
-                if (update != null) {
-                    UpdateNotifications.showAvailable(this@MainActivity, update)
-                    if (dismissedUpdateVersion != update.versionCode) {
-                        availableUpdate = update
+                if (freshUpdate != null) {
+                    UpdateNotifications.showAvailable(this@MainActivity, freshUpdate)
+                    if (dismissedUpdateVersion != freshUpdate.versionCode) {
+                        availableUpdate = freshUpdate
                     }
-                } else {
-                    availableUpdate = null
                 }
             }
 
@@ -143,7 +148,13 @@ class MainActivity : ComponentActivity() {
 
             val notificationPermissionLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.RequestPermission(),
-            ) { /* The in-app update dialog still works if notifications are declined. */ }
+            ) { granted ->
+                // The first update check can finish while Android's permission sheet is still open.
+                // Re-check immediately after approval so the notification is not lost for this launch.
+                if (granted) {
+                    updateCheckGeneration.value = updateCheckGeneration.value + 1
+                }
+            }
 
             if (
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -191,7 +202,7 @@ class MainActivity : ComponentActivity() {
                         title = { Text("⬆ تحديث جديد لـ Arab VPN") },
                         text = {
                             Text(
-                                "الإصدار ${update.versionName} متاح الآن. يمكنك تنزيل التحديث مباشرة، وسيستخدم التطبيق ملف الفرق فقط عندما يكون أصغر من الحزمة الكاملة."
+                                "الإصدار ${update.versionName} متاح الآن. اضغط «تحديث الآن» للبدء مباشرة. إذا توفر ملف فرق أصغر سيستخدمه التطبيق تلقائياً."
                             )
                         },
                         confirmButton = {
