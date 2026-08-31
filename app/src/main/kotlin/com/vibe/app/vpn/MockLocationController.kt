@@ -40,12 +40,14 @@ class MockLocationController(context: Context) {
     fun developerOptionsIntent(): Intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
-    suspend fun start(country: VpnCountry, ipLocation: IpLocation): LocationSyncResult {
+    suspend fun start(country: VpnCountry, ipLocation: IpLocation): LocationSyncResult =
+        start(CountryLocationResolver.resolve(country, ipLocation))
+
+    suspend fun start(target: CountryLocation): LocationSyncResult {
         if (!isAuthorized()) {
             return LocationSyncResult.NeedsDeveloperSetup
         }
 
-        val target = CountryLocationResolver.resolve(country, ipLocation)
         stop()
 
         return runCatching {
@@ -68,8 +70,18 @@ class MockLocationController(context: Context) {
     suspend fun stop() {
         refreshJob?.cancelAndJoin()
         refreshJob = null
-        if (!isAuthorized()) return
+        clearProviders()
+    }
 
+    /** Used by a foreground service during teardown where suspension is not available. */
+    fun stopNow() {
+        refreshJob?.cancel()
+        refreshJob = null
+        clearProviders()
+    }
+
+    private fun clearProviders() {
+        if (!isAuthorized()) return
         runCatching { locationManager.setTestProviderEnabled(LocationManager.GPS_PROVIDER, false) }
         runCatching { locationManager.removeTestProvider(LocationManager.GPS_PROVIDER) }
         runCatching { locationManager.setTestProviderEnabled(LocationManager.NETWORK_PROVIDER, false) }
