@@ -7,6 +7,12 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.net.HttpURLConnection
@@ -35,10 +41,8 @@ class FreeVpnCatalog {
         val sourceCandidates = coroutineScope {
             sourcesFor(country).map { source ->
                 async(Dispatchers.IO) {
-                    runCatching { fetch(source.url) }
-                        .getOrNull()
-                        .orEmpty()
-                        .lineSequence()
+                    val body = runCatching { fetch(source.url) }.getOrNull().orEmpty()
+                    source.shareLines(body)
                         .map(String::trim)
                         .filter { line -> line.isNotEmpty() && !line.startsWith('#') }
                         .map(source::normalize)
@@ -105,6 +109,13 @@ class FreeVpnCatalog {
                 "&proxy_format=protocolipport&format=text&country=$lowerCode&timeout=10000"
 
         return listOf(
+            // Public endpoint documented by Socks5Proxies.com. It is best-effort/rate-limited,
+            // therefore it is one source among several and never bypasses local validation.
+            CatalogSource(
+                id = "socks5proxies-live-country",
+                url = "https://api.socks5proxies.com/api/proxies?country=$upperCode&limit=100",
+                format = SourceFormat.SOCKS5PROXIES_JSON,
+            ),
             CatalogSource(
                 id = "proxyscrape-http-live",
                 url = "$proxyScrapeBase&protocol=http",
@@ -125,14 +136,13 @@ class FreeVpnCatalog {
                 url = "https://raw.githubusercontent.com/ProxyScrape/free-proxy-list/main/proxies/countries/$lowerCode/data.txt",
             ),
             CatalogSource(
+                id = "webunblocker-country-snapshot",
+                url = "https://raw.githubusercontent.com/webunblocker/free-proxy-list/main/proxies/countries/$upperCode/data.txt",
+            ),
+            CatalogSource(
                 id = "hproxy-http-live",
                 url = "$hproxyBase&protocol=http",
                 linePrefix = "http://",
-            ),
-            CatalogSource(
-                id = "hproxy-https-live",
-                url = "$hproxyBase&protocol=https",
-                linePrefix = "https://",
             ),
             CatalogSource(
                 id = "hproxy-socks5-live",
@@ -158,7 +168,7 @@ class FreeVpnCatalog {
             requestMethod = "GET"
             useCaches = false
             instanceFollowRedirects = true
-            setRequestProperty("Accept", "text/plain,*/*;q=0.2")
+            setRequestProperty("Accept", "application/json,text/plain,*/*;q=0.2")
             setRequestProperty("User-Agent", "ArabVPN/1.3 Android")
         }
         return try {
@@ -392,11 +402,22 @@ class FreeVpnCatalog {
         val id: String,
         val url: String,
         val linePrefix: String? = null,
+        val format: SourceFormat = SourceFormat.TEXT,
     ) {
+        fun shareLines(body: String): Sequence<String> = when (format) {
+            SourceFormat.TEXT -> body.lineSequence()
+            SourceFormat.SOCKS5PROXIES_JSON -> Socks5ProxiesPublicFeed.shareLines(body)
+        }
+
         fun normalize(line: String): String {
             if (linePrefix == null || "://" in line) return line
             return "$linePrefix$line"
         }
+    }
+
+    private enum class SourceFormat {
+        TEXT,
+        SOCKS5PROXIES_JSON,
     }
 
     companion object {
@@ -407,8 +428,8 @@ class FreeVpnCatalog {
         private const val MAX_SOURCE_BYTES = 4L * 1024L * 1024L
         private const val MAX_GEO_RESPONSE_CHARS = 8_192
         private const val MAX_PER_SOURCE = 100
-        private const val MAX_PREFLIGHT_CANDIDATES = 240
-        private const val MAX_GEO_CANDIDATES = 56
+        private const val MAX_PREFLIGHT_CANDIDATES = 280
+        private const val MAX_GEO_CANDIDATES = 64
         private const val MAX_GEO_CONCURRENCY = 5
         private const val MAX_PREFLIGHT_CONCURRENCY = 20
         const val MAX_CONNECT_ATTEMPTS = 24
@@ -417,6 +438,57 @@ class FreeVpnCatalog {
             Regex("\\\"country_code\\\"\\s*:\\s*\\\"([A-Za-z]{2})\\\"")
         private val COUNTRY_IS_CODE_REGEX =
             Regex("\\\"country\\\"\\s*:\\s*\\\"([A-Za-z]{2})\\\"")
+    }
+}
+
+/**
+ * Adapter for the documented public `/api/proxies` endpoint. HTTPS-only proxies are deliberately
+ * ignored until the preflight layer performs a real TLS-to-proxy handshake; treating them as
+ * plaintext HTTP was a previous source of false failures.
+ */
+internal object Socks5ProxiesPublicFeed {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun shareLines(body: String): Sequence<String> {
+        val data = runCatching {
+            json.parseToJsonElement(body).jsonObject["data"]?.jsonArray
+        }.getOrNull() ?: return emptySequence()
+
+        return data.asSequence().flatMap { element ->
+            val obj = runCatching { element.jsonObject }.getOrNull()
+                ?: return@flatMap emptySequence()
+            val host = obj["host"]?.jsonPrimitive?.contentOrNull
+                ?: obj["ip"]?.jsonPrimitive?.contentOrNull
+                ?: return@flatMap emptySequence()
+            val port = obj["port"]?.jsonPrimitive?.intOrNull
+                ?: return@flatMap emptySequence()
+            if (host.isBlank() || port !in 1..65535) return@flatMap emptySequence()
+
+            val reportedProtocols = runCatching {
+                obj["protocols"]?.jsonArray
+                    ?.mapNotNull { it.jsonPrimitive.contentOrNull?.lowercase() }
+            }.getOrNull().orEmpty()
+
+            val protocols = if (reportedProtocols.isNotEmpty()) {
+                reportedProtocols
+            } else {
+                buildList {
+                    if (obj["socks5"]?.jsonPrimitive?.intOrNull == 1) add("socks5")
+                    if (obj["socks4"]?.jsonPrimitive?.intOrNull == 1) add("socks4")
+                    if (obj["http"]?.jsonPrimitive?.intOrNull == 1) add("http")
+                }
+            }
+
+            val endpoint = if (':' in host && !host.startsWith('[')) "[$host]:$port" else "$host:$port"
+            protocols.asSequence().mapNotNull { protocol ->
+                when (protocol) {
+                    "socks5" -> "socks5://$endpoint"
+                    "socks4" -> "socks4://$endpoint"
+                    "http" -> "http://$endpoint"
+                    else -> null
+                }
+            }
+        }
     }
 }
 
