@@ -21,10 +21,9 @@ object UpdateScheduler {
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
 
-        // UPDATE is deliberate: older installs used KEEP with a 12-hour interval, which meant
-        // that schedule could survive app upgrades forever. Move every existing install to the
-        // new responsive schedule while still keeping one unique periodic worker.
-        val periodic = PeriodicWorkRequestBuilder<UpdateCheckWorker>(30, TimeUnit.MINUTES)
+        // 15 minutes is WorkManager's minimum periodic interval. UPDATE also replaces the old
+        // 12-hour/30-minute schedule already persisted on existing installations.
+        val periodic = PeriodicWorkRequestBuilder<UpdateCheckWorker>(15, TimeUnit.MINUTES)
             .setConstraints(constraints)
             .build()
         workManager.enqueueUniquePeriodicWork(
