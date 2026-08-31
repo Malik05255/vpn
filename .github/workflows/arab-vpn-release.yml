@@ -1,0 +1,182 @@
+name: Arab VPN Release
+
+on:
+  push:
+    tags:
+      - "arab-vpn-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. arab-vpn-v1.0.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build signed APK and delta
+    runs-on: ubuntu-latest
+    env:
+      ARAB_VPN_KEYSTORE_BASE64: ${{ secrets.ARAB_VPN_KEYSTORE_BASE64 }}
+      ARAB_VPN_KEYSTORE_PASSWORD: ${{ secrets.ARAB_VPN_KEYSTORE_PASSWORD }}
+      ARAB_VPN_KEY_ALIAS: ${{ secrets.ARAB_VPN_KEY_ALIAS }}
+      ARAB_VPN_KEY_PASSWORD: ${{ secrets.ARAB_VPN_KEY_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: gradle
+
+      - name: Validate signing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for value in ARAB_VPN_KEYSTORE_BASE64 ARAB_VPN_KEYSTORE_PASSWORD ARAB_VPN_KEY_ALIAS ARAB_VPN_KEY_PASSWORD; do
+            if [ -z "${!value:-}" ]; then
+              echo "Missing required repository secret: $value" >&2
+              exit 1
+            fi
+          done
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          case "$TAG" in
+            arab-vpn-v*) ;;
+            *) echo "Tag must start with arab-vpn-v" >&2; exit 1 ;;
+          esac
+
+          VERSION_CODE=$(grep -m1 'versionCode = ' app/build.gradle.kts | sed -E 's/.*versionCode = ([0-9]+).*/\1/')
+          VERSION_NAME=$(grep -m1 'versionName = ' app/build.gradle.kts | sed -E 's/.*versionName = "([^"]+)".*/\1/')
+          test -n "$VERSION_CODE"
+          test -n "$VERSION_NAME"
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Build release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon app:assembleRelease
+
+      - name: Sign release with stable key
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          printf '%s' "$ARAB_VPN_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/arab-vpn.jks"
+
+          BUILD_TOOLS=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          ZIPALIGN="$BUILD_TOOLS/zipalign"
+          APKSIGNER="$BUILD_TOOLS/apksigner"
+          UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
+          if [ ! -f "$UNSIGNED" ]; then
+            UNSIGNED=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' | head -1)
+          fi
+          test -f "$UNSIGNED"
+
+          "$ZIPALIGN" -p -f 4 "$UNSIGNED" dist/ArabVPN-aligned.apk
+          "$APKSIGNER" sign \
+            --ks "$RUNNER_TEMP/arab-vpn.jks" \
+            --ks-key-alias "$ARAB_VPN_KEY_ALIAS" \
+            --ks-pass "env:ARAB_VPN_KEYSTORE_PASSWORD" \
+            --key-pass "env:ARAB_VPN_KEY_PASSWORD" \
+            --out dist/ArabVPN.apk \
+            dist/ArabVPN-aligned.apk
+          "$APKSIGNER" verify --verbose --print-certs dist/ArabVPN.apk
+          rm -f dist/ArabVPN-aligned.apk "$RUNNER_TEMP/arab-vpn.jks"
+
+      - name: Build binary delta from previous Arab VPN release
+        id: delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bsdiff
+
+          TAG="${{ steps.meta.outputs.tag }}"
+          VERSION_CODE="${{ steps.meta.outputs.version_code }}"
+          VERSION_NAME="${{ steps.meta.outputs.version_name }}"
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          FULL_SHA=$(sha256sum dist/ArabVPN.apk | awk '{print $1}')
+          FULL_SIZE=$(stat -c%s dist/ArabVPN.apk)
+
+          PREV_TAG=$(gh release list --limit 50 --json tagName,isDraft,isPrerelease \
+            --jq '[.[] | select(.tagName | startswith("arab-vpn-v")) | select(.isDraft == false and .isPrerelease == false)][0].tagName // ""')
+
+          PATCH_JSON='[]'
+          PATCH_FILE=''
+          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$TAG" ]; then
+            mkdir -p previous
+            if gh release download "$PREV_TAG" -p 'ArabVPN.apk' -p 'update.json' --dir previous; then
+              OLD_CODE=$(jq -r '.versionCode // empty' previous/update.json)
+              if [ -n "$OLD_CODE" ] && [ "$OLD_CODE" != "$VERSION_CODE" ]; then
+                PATCH_FILE="ArabVPN-${OLD_CODE}-to-${VERSION_CODE}.bsdiff"
+                bsdiff previous/ArabVPN.apk dist/ArabVPN.apk "dist/$PATCH_FILE"
+                PATCH_SIZE=$(stat -c%s "dist/$PATCH_FILE")
+                if [ "$PATCH_SIZE" -lt "$FULL_SIZE" ]; then
+                  PATCH_SHA=$(sha256sum "dist/$PATCH_FILE" | awk '{print $1}')
+                  PATCH_URL="$BASE_URL/$PATCH_FILE"
+                  PATCH_JSON=$(jq -n \
+                    --argjson from "$OLD_CODE" \
+                    --arg url "$PATCH_URL" \
+                    --arg sha "$PATCH_SHA" \
+                    --argjson size "$PATCH_SIZE" \
+                    '[{fromVersionCode:$from,url:$url,sha256:$sha,size:$size}]')
+                else
+                  rm -f "dist/$PATCH_FILE"
+                  PATCH_FILE=''
+                fi
+              fi
+            fi
+          fi
+
+          jq -n \
+            --argjson versionCode "$VERSION_CODE" \
+            --arg versionName "$VERSION_NAME" \
+            --arg fullUrl "$BASE_URL/ArabVPN.apk" \
+            --arg fullSha "$FULL_SHA" \
+            --argjson fullSize "$FULL_SIZE" \
+            --argjson patches "$PATCH_JSON" \
+            '{versionCode:$versionCode,versionName:$versionName,full:{url:$fullUrl,sha256:$fullSha,size:$fullSize},patches:$patches}' \
+            > dist/update.json
+
+          echo "patch_file=$PATCH_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+          VERSION_NAME="${{ steps.meta.outputs.version_name }}"
+          ASSETS=(dist/ArabVPN.apk dist/update.json)
+          if [ -n "${{ steps.delta.outputs.patch_file }}" ]; then
+            ASSETS+=("dist/${{ steps.delta.outputs.patch_file }}")
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          else
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "Arab VPN $VERSION_NAME" \
+              --notes "تحديث Arab VPN. التطبيق يستخدم فرقاً ثنائياً صغيراً عند توفره، مع الرجوع للحزمة الكاملة تلقائياً عند الحاجة."
+          fi
