@@ -3,23 +3,26 @@ package com.vibe.app.vpn
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
-import com.wireguard.android.backend.Tunnel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.charset.StandardCharsets
 
+/**
+ * Fully automatic connection manager.
+ *
+ * The user only chooses a country. No profile import, key entry or protocol configuration is
+ * exposed: public candidates are discovered, preflighted, connected and then quality-verified.
+ */
 class AutomaticVpnManager(context: Context) {
     private val appContext = context.applicationContext
     private val catalog = FreeVpnCatalog()
     private val qualityClient = ConnectionQualityClient()
-    private val profileStore = VpnProfileStore(appContext)
-    private val wireGuard = WireGuardManager(appContext)
     private val runtimeDir = File(appContext.filesDir, "vpn-runtime").apply { mkdirs() }
 
     @Volatile
-    private var activeMode: ActiveMode = ActiveMode.NONE
+    private var active = false
 
     fun preparePermissionIntent(): Intent? = VpnService.prepare(appContext)
 
@@ -42,11 +45,12 @@ class AutomaticVpnManager(context: Context) {
                 "اختبار المسار ${index + 1}/${candidates.size} · ${candidate.protocol.name} · " +
                     "${candidate.preflightLatencyMs?.let { "${it}ms" } ?: "متاح"}"
             )
+
             val attempt = runCatching {
                 val config = SingBoxConfigBuilder.build(candidate)
                 val configFile = writeRuntimeConfig(country, config)
                 SingBoxVpnService.start(appContext, configFile.absolutePath)
-                activeMode = ActiveMode.SING_BOX
+                active = true
                 delay(TUNNEL_SETTLE_MS)
                 val quality = qualityClient.verify(country)
                 AutomaticConnectionResult(
@@ -65,35 +69,8 @@ class AutomaticVpnManager(context: Context) {
             }.onFailure { error ->
                 failures += error.message.orEmpty().take(160)
                 SingBoxVpnService.stop(appContext)
-                activeMode = ActiveMode.NONE
+                active = false
                 delay(BETWEEN_ATTEMPTS_MS)
-            }
-        }
-
-        // A manually imported WireGuard profile is only a fallback. Automatic zero-cost discovery
-        // remains the default and no credentials are bundled in the APK or repository.
-        if (profileStore.hasProfile(country)) {
-            onProgress("لم ينجح المسار العام؛ جاري فحص WireGuard الاحتياطي المحفوظ على جهازك…")
-            val manual = runCatching {
-                val state = wireGuard.connect(country, profileStore.load(country))
-                check(state == Tunnel.State.UP) { "تعذر تشغيل WireGuard الاحتياطي" }
-                activeMode = ActiveMode.WIRE_GUARD
-                delay(TUNNEL_SETTLE_MS)
-                val quality = qualityClient.verify(country)
-                AutomaticConnectionResult(
-                    quality = quality,
-                    mode = ConnectionEngine.WIRE_GUARD,
-                    protocol = "WireGuard",
-                    sourceId = "manual-private-profile",
-                    nodeName = "WireGuard احتياطي",
-                    preflightLatencyMs = null,
-                )
-            }
-            manual.onSuccess { return@withContext it }
-            manual.onFailure { error ->
-                failures += error.message.orEmpty().take(160)
-                runCatching { wireGuard.disconnect() }
-                activeMode = ActiveMode.NONE
             }
         }
 
@@ -111,15 +88,10 @@ class AutomaticVpnManager(context: Context) {
     }
 
     private suspend fun disconnectInternal() {
-        when (activeMode) {
-            ActiveMode.SING_BOX -> SingBoxVpnService.stop(appContext)
-            ActiveMode.WIRE_GUARD -> runCatching { wireGuard.disconnect() }
-            ActiveMode.NONE -> {
-                if (SingBoxVpnService.isRunning()) SingBoxVpnService.stop(appContext)
-                runCatching { wireGuard.disconnect() }
-            }
+        if (active || SingBoxVpnService.isRunning()) {
+            SingBoxVpnService.stop(appContext)
         }
-        activeMode = ActiveMode.NONE
+        active = false
         delay(150)
     }
 
@@ -135,12 +107,6 @@ class AutomaticVpnManager(context: Context) {
             temp.delete()
         }
         return target
-    }
-
-    private enum class ActiveMode {
-        NONE,
-        SING_BOX,
-        WIRE_GUARD,
     }
 
     companion object {
@@ -161,5 +127,4 @@ data class AutomaticConnectionResult(
 
 enum class ConnectionEngine {
     SING_BOX,
-    WIRE_GUARD,
 }
