@@ -12,7 +12,8 @@ import java.nio.charset.StandardCharsets
 
 /**
  * Fully automatic connection manager. Every candidate is isolated, time-bounded and completely
- * torn down before the next one starts.
+ * torn down before the next one starts. A privacy-safe diagnostic trail is kept so a real Android
+ * failure can be distinguished from an empty/dead public proxy pool without adb.
  */
 class AutomaticVpnManager(context: Context) {
     private val appContext = context.applicationContext
@@ -25,21 +26,51 @@ class AutomaticVpnManager(context: Context) {
 
     fun preparePermissionIntent(): Intent? = VpnService.prepare(appContext)
 
+    fun diagnosticSummary(): String = VpnDiagnostics.summary(appContext)
+
     suspend fun connect(
         country: VpnCountry,
         onProgress: (String) -> Unit = {},
     ): AutomaticConnectionResult = withContext(Dispatchers.IO) {
         disconnectInternal()
+        VpnDiagnostics.reset(appContext, country)
+        VpnDiagnostics.record(appContext, "discovery.start", "country=${country.code}")
 
         onProgress("جاري جمع واختبار المسارات المجانية في ${country.displayNameAr}…")
-        val candidates = catalog.discover(country)
+        val candidates = runCatching { catalog.discover(country) }
+            .onFailure { error ->
+                VpnDiagnostics.record(appContext, "discovery.failed", error.userMessage())
+            }
+            .getOrThrow()
         val failures = mutableListOf<String>()
+
+        val sourceSummary = candidates
+            .groupingBy { it.sourceId }
+            .eachCount()
+            .entries
+            .sortedByDescending { it.value }
+            .take(8)
+            .joinToString(",") { "${it.key}:${it.value}" }
+        val protocolSummary = candidates
+            .groupingBy { it.protocol.name }
+            .eachCount()
+            .entries
+            .sortedByDescending { it.value }
+            .joinToString(",") { "${it.key}:${it.value}" }
+        VpnDiagnostics.record(
+            appContext,
+            "discovery.ready",
+            "candidates=${candidates.size}; protocols=$protocolSummary; sources=$sourceSummary",
+        )
 
         if (candidates.isNotEmpty()) {
             onProgress("وجدنا ${candidates.size} مسارات اجتازت الفحص الأولي؛ نتحقق من دولة الخروج فعلياً…")
         }
 
         candidates.forEachIndexed { index, candidate ->
+            val safeCandidate =
+                "attempt=${index + 1}/${candidates.size}; protocol=${candidate.protocol.name}; source=${candidate.sourceId}; evidence=${candidate.countryEvidence}; preflight=${candidate.preflightLatencyMs ?: -1}ms"
+            VpnDiagnostics.record(appContext, "attempt.start", safeCandidate)
             onProgress(
                 "اختبار ${index + 1}/${candidates.size} · ${candidate.protocol.name} · " +
                     "${candidate.preflightLatencyMs?.let { "${it}ms" } ?: "متاح"}"
@@ -48,11 +79,14 @@ class AutomaticVpnManager(context: Context) {
             val attempt = runCatching {
                 withTimeout(ATTEMPT_TIMEOUT_MS) {
                     val config = SingBoxConfigBuilder.build(candidate)
+                    VpnDiagnostics.record(appContext, "attempt.config", "${candidate.protocol.name}/${candidate.sourceId}")
                     val configFile = writeRuntimeConfig(country, config)
                     SingBoxVpnService.start(appContext, configFile.absolutePath)
                     active = true
+                    VpnDiagnostics.record(appContext, "attempt.tun_started", "${candidate.protocol.name}/${candidate.sourceId}")
                     delay(TUNNEL_SETTLE_MS)
 
+                    VpnDiagnostics.record(appContext, "attempt.verify_exit", "expected=${country.code}")
                     val quality = qualityClient.verify(country)
                     AutomaticConnectionResult(
                         quality = quality,
@@ -66,10 +100,21 @@ class AutomaticVpnManager(context: Context) {
             }
 
             attempt.onSuccess { result ->
+                VpnDiagnostics.record(
+                    appContext,
+                    "connection.verified",
+                    "country=${country.code}; protocol=${candidate.protocol.name}; source=${candidate.sourceId}",
+                )
                 onProgress("تم التحقق من أن عنوان الخروج من ${country.displayNameAr} بنجاح.")
                 return@withContext result
             }.onFailure { error ->
-                failures += "${candidate.protocol.name}/${candidate.sourceId}: ${error.userMessage()}".take(220)
+                val reason = error.userMessage()
+                failures += "${candidate.protocol.name}/${candidate.sourceId}: $reason".take(220)
+                VpnDiagnostics.record(
+                    appContext,
+                    "attempt.failed",
+                    "${candidate.protocol.name}/${candidate.sourceId}; ${error.javaClass.simpleName}; $reason",
+                )
                 SingBoxVpnService.stopAndWait(appContext)
                 active = false
                 delay(BETWEEN_ATTEMPTS_MS)
@@ -77,6 +122,11 @@ class AutomaticVpnManager(context: Context) {
         }
 
         val recent = failures.takeLast(3)
+        VpnDiagnostics.record(
+            appContext,
+            "connection.exhausted",
+            "candidates=${candidates.size}; attempted=${failures.size}",
+        )
         throw IllegalStateException(
             buildString {
                 if (candidates.isEmpty()) {
@@ -88,6 +138,8 @@ class AutomaticVpnManager(context: Context) {
                     append(" آخر النتائج: ")
                     append(recent.joinToString(" | "))
                 }
+                append("\n\nتقرير التشخيص:\n")
+                append(VpnDiagnostics.summary(appContext, 10))
             }
         )
     }
@@ -120,12 +172,13 @@ class AutomaticVpnManager(context: Context) {
     private fun Throwable.userMessage(): String = message
         ?.replace('\n', ' ')
         ?.takeIf(String::isNotBlank)
+        ?.take(260)
         ?: javaClass.simpleName.ifBlank { "فشل غير معروف" }
 
     companion object {
-        private const val TUNNEL_SETTLE_MS = 1_200L
-        private const val BETWEEN_ATTEMPTS_MS = 200L
-        private const val ATTEMPT_TIMEOUT_MS = 22_000L
+        private const val TUNNEL_SETTLE_MS = 1_600L
+        private const val BETWEEN_ATTEMPTS_MS = 250L
+        private const val ATTEMPT_TIMEOUT_MS = 25_000L
         private const val MAX_CONFIG_BYTES = 512 * 1024
     }
 }
