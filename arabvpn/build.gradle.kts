@@ -5,8 +5,6 @@ plugins {
 }
 
 android {
-    // Keep this namespace temporarily compatible with the shared VPN source package while
-    // applicationId provides the real Android install/update identity.
     namespace = "com.vibe.app"
     compileSdk = 36
 
@@ -45,8 +43,6 @@ android {
         buildConfig = true
     }
 
-    // Only the Arab VPN launcher/updater and VPN engine are compiled into this application.
-    // VibeApp chat, agent, project builder, database, plugins and other feature sources are excluded.
     sourceSets {
         getByName("main") {
             java.setSrcDirs(
@@ -90,7 +86,6 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    implementation(libs.androidx.material.icons.extended)
     implementation(libs.splashscreen)
     implementation(libs.kotlinx.serialization.json)
 
