@@ -21,8 +21,9 @@ class UpdateDownloadWorker(
         setForeground(UpdateNotifications.downloadingForeground(applicationContext, -1))
 
         runCatching {
-            val client = GitHubUpdateClient()
+            val client = GitHubUpdateClient(applicationContext)
             val manifest = client.fetchLatestManifest()
+                ?: client.cachedManifest()
                 ?: error("لا يوجد إصدار Arab VPN منشور حالياً")
             if (manifest.versionCode <= BuildConfig.VERSION_CODE) return@runCatching
 
