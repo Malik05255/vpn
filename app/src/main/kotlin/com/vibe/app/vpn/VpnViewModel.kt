@@ -33,6 +33,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 preflightLatencyMs = null,
                 locationSyncStatus = LocationSyncStatus.IDLE,
                 locationTarget = null,
+                showBackgroundPrompt = false,
             )
         }
     }
@@ -46,6 +47,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 errorMessage = "يجب السماح للتطبيق بإنشاء اتصال VPN حتى يتم تشغيل النفق.",
                 noticeMessage = null,
+                showBackgroundPrompt = false,
             )
         }
     }
@@ -56,8 +58,13 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 connectionStatus = ConnectionStatus.DISCONNECTED,
                 noticeMessage = null,
                 errorMessage = error.message ?: "تعذر بدء خدمة VPN على هذا الجهاز.",
+                showBackgroundPrompt = false,
             )
         }
+    }
+
+    fun dismissBackgroundPrompt() {
+        _uiState.update { it.copy(showBackgroundPrompt = false) }
     }
 
     fun connectAuthorized() {
@@ -79,6 +86,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                     preflightLatencyMs = null,
                     locationSyncStatus = LocationSyncStatus.SYNCING,
                     locationTarget = null,
+                    showBackgroundPrompt = false,
                 )
             }
 
@@ -117,6 +125,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                             is LocationSyncResult.Failed ->
                                 "VPN وIP وDNS جاهزة، لكن تعذر مزامنة الموقع حالياً."
                         },
+                        showBackgroundPrompt = locationResult is LocationSyncResult.Active,
                     )
                 }
             }.onFailure { error ->
@@ -137,6 +146,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                         noticeMessage = null,
                         errorMessage = error.message
                             ?: "تعذر العثور على اتصال مجاني يحقق معايير الدولة والسرعة والجودة.",
+                        showBackgroundPrompt = false,
                     )
                 }
             }
@@ -161,15 +171,20 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                         locationTarget = result.location,
                         errorMessage = null,
                         noticeMessage = "تمت مزامنة الموقع تلقائياً مع اتصال ${country.displayNameAr}.",
+                        showBackgroundPrompt = true,
                     )
                 }
                 LocationSyncResult.NeedsDeveloperSetup -> _uiState.update {
-                    it.copy(locationSyncStatus = LocationSyncStatus.NEEDS_SETUP)
+                    it.copy(
+                        locationSyncStatus = LocationSyncStatus.NEEDS_SETUP,
+                        showBackgroundPrompt = false,
+                    )
                 }
                 is LocationSyncResult.Failed -> _uiState.update {
                     it.copy(
                         locationSyncStatus = LocationSyncStatus.FAILED,
                         errorMessage = result.reason,
+                        showBackgroundPrompt = false,
                     )
                 }
             }
@@ -184,6 +199,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                     connectionStatus = ConnectionStatus.DISCONNECTING,
                     errorMessage = null,
                     noticeMessage = null,
+                    showBackgroundPrompt = false,
                 )
             }
             val vpnResult = runCatching { automaticVpn.disconnect() }
@@ -203,6 +219,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                     locationTarget = null,
                     noticeMessage = if (vpnResult.isSuccess) "تم فصل الاتصال والموقع." else null,
                     errorMessage = vpnResult.exceptionOrNull()?.message,
+                    showBackgroundPrompt = false,
                 )
             }
         }
@@ -229,6 +246,7 @@ data class VpnUiState(
     val locationTarget: CountryLocation? = null,
     val errorMessage: String? = null,
     val noticeMessage: String? = null,
+    val showBackgroundPrompt: Boolean = false,
 )
 
 enum class ConnectionStatus {
