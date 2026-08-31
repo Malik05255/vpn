@@ -100,9 +100,10 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }.onSuccess { result ->
                 val report = result.quality
-                val locationResult = mockLocation.start(country, report.ipLocation)
+                val locationTarget = CountryLocationResolver.resolve(country, report.ipLocation)
+                val locationResult = SingBoxVpnService.syncLocation(getApplication(), locationTarget)
                 val locationState = locationResult.toUiStatus()
-                val locationTarget = (locationResult as? LocationSyncResult.Active)?.location
+                val activeLocation = (locationResult as? LocationSyncResult.Active)?.location
 
                 _uiState.update {
                     it.copy(
@@ -115,7 +116,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                         sourceId = result.sourceId,
                         preflightLatencyMs = result.preflightLatencyMs,
                         locationSyncStatus = locationState,
-                        locationTarget = locationTarget,
+                        locationTarget = activeLocation,
                         errorMessage = (locationResult as? LocationSyncResult.Failed)?.reason,
                         noticeMessage = when (locationResult) {
                             is LocationSyncResult.Active ->
@@ -130,7 +131,6 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }.onFailure { error ->
                 runCatching { automaticVpn.disconnect() }
-                runCatching { mockLocation.stop() }
                 _uiState.update {
                     it.copy(
                         connectionStatus = ConnectionStatus.DISCONNECTED,
@@ -164,7 +164,8 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             _uiState.update { it.copy(locationSyncStatus = LocationSyncStatus.SYNCING) }
-            when (val result = mockLocation.start(country, ipLocation)) {
+            val target = CountryLocationResolver.resolve(country, ipLocation)
+            when (val result = SingBoxVpnService.syncLocation(getApplication(), target)) {
                 is LocationSyncResult.Active -> _uiState.update {
                     it.copy(
                         locationSyncStatus = LocationSyncStatus.ACTIVE,
@@ -203,7 +204,6 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             val vpnResult = runCatching { automaticVpn.disconnect() }
-            runCatching { mockLocation.stop() }
 
             _uiState.update {
                 it.copy(
