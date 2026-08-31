@@ -1,19 +1,42 @@
+import java.util.Base64
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.kotlin.serialization)
 }
 
+val overriddenVersionCode = providers.gradleProperty("arabVpnVersionCode").orNull?.toIntOrNull()
+val overriddenVersionName = providers.gradleProperty("arabVpnVersionName").orNull
+
+// Development builds use one stable, public TEST key so APKs from different CI runs can update
+// each other. Production releases still use the private repository-secret signing key.
+val devKeySource = layout.projectDirectory.file("dev-signing/arabvpn-dev.jks.b64").asFile
+val devKeyFile = layout.buildDirectory.file("dev-signing/arabvpn-dev.jks").get().asFile
+if (!devKeyFile.isFile) {
+    devKeyFile.parentFile.mkdirs()
+    devKeyFile.writeBytes(Base64.getDecoder().decode(devKeySource.readText().trim()))
+}
+
 android {
     namespace = "com.vibe.app"
     compileSdk = 36
+
+    signingConfigs {
+        getByName("debug") {
+            storeFile = devKeyFile
+            storePassword = "arabvpn-dev-only-2026"
+            keyAlias = "arabvpn-dev"
+            keyPassword = "arabvpn-dev-only-2026"
+        }
+    }
 
     defaultConfig {
         applicationId = "com.malik05255.arabvpn"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = overriddenVersionCode ?: 1
+        versionName = overriddenVersionName ?: "1.0.0"
 
         vectorDrawables.useSupportLibrary = true
     }
