@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.VpnService
-import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.vibe.app.R
@@ -31,24 +30,59 @@ import java.util.Locale
 class SingBoxVpnService : VpnService(), CommandServerHandler {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val operationMutex = Mutex()
-    private lateinit var platform: SingBoxPlatformInterface
+    private var platform: SingBoxPlatformInterface? = null
+    private var initializationError: Throwable? = null
     private var commandServer: CommandServer? = null
     private var activeConfigPath: String? = null
 
     override fun onCreate() {
         super.onCreate()
-        ensureLibboxSetup(applicationContext)
-        platform = SingBoxPlatformInterface(this)
-        createNotificationChannel()
+
+        // Native VPN initialization can fail on a specific ROM/ABI/device. Treat that as a
+        // connection failure, never as a process-fatal startup crash.
+        runCatching { createNotificationChannel() }
+        runCatching {
+            ensureLibboxSetup(applicationContext)
+            SingBoxPlatformInterface(this)
+        }.onSuccess {
+            platform = it
+            initializationError = null
+        }.onFailure {
+            initializationError = it
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
-                startForeground(NOTIFICATION_ID, buildNotification("جاري إنشاء الاتصال الآمن…"))
+                val foregroundError = runCatching {
+                    startForeground(NOTIFICATION_ID, buildNotification("جاري إنشاء الاتصال الآمن…"))
+                }.exceptionOrNull()
+                if (foregroundError != null) {
+                    completeStart(Result.failure(foregroundError))
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
+
+                val initError = initializationError
+                if (initError != null || platform == null) {
+                    completeStart(
+                        Result.failure(
+                            IllegalStateException(
+                                "تعذر تشغيل محرك VPN على هذا الجهاز",
+                                initError,
+                            )
+                        )
+                    )
+                    runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
+
                 val path = intent.getStringExtra(EXTRA_CONFIG_PATH)
                 if (path.isNullOrBlank()) {
                     completeStart(Result.failure(IllegalArgumentException("Missing sing-box config path")))
+                    runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
                     stopSelf(startId)
                     return START_NOT_STICKY
                 }
@@ -57,8 +91,10 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
                         runCatching { startRuntime(path) }
                             .onSuccess {
                                 running = true
-                                getSystemService(NotificationManager::class.java)
-                                    .notify(NOTIFICATION_ID, buildNotification("VPN متصل"))
+                                runCatching {
+                                    getSystemService(NotificationManager::class.java)
+                                        .notify(NOTIFICATION_ID, buildNotification("VPN متصل"))
+                                }
                                 completeStart(Result.success(Unit))
                             }
                             .onFailure { error ->
@@ -101,6 +137,7 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
 
     private fun startRuntime(configPath: String) {
         stopRuntime()
+        val activePlatform = checkNotNull(platform) { "sing-box platform is not initialized" }
         val file = File(configPath)
         require(file.isFile && file.length() in 1..MAX_CONFIG_BYTES) {
             "sing-box configuration is unavailable or too large"
@@ -108,14 +145,14 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
         val content = file.readText()
         require(content.isNotBlank()) { "sing-box configuration is empty" }
 
-        val server = CommandServer(this, platform)
+        val server = CommandServer(this, activePlatform)
         runCatching {
             server.start()
             server.startOrReloadService(content, OverrideOptions())
         }.onFailure {
             runCatching { server.closeService() }
             runCatching { server.close() }
-            platform.closeTun()
+            runCatching { activePlatform.closeTun() }
             throw it
         }
         commandServer = server
@@ -131,7 +168,7 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
             runCatching { server.closeService() }
             runCatching { server.close() }
         }
-        platform.closeTun()
+        runCatching { platform?.closeTun() }
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
     }
 
@@ -207,8 +244,8 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
                 action = ACTION_START
                 putExtra(EXTRA_CONFIG_PATH, configPath)
             }
-            ContextCompat.startForegroundService(context, intent)
             try {
+                ContextCompat.startForegroundService(context, intent)
                 withTimeout(12_000) { deferred.await() }.getOrThrow()
             } finally {
                 if (pendingStart === deferred) pendingStart = null
@@ -217,9 +254,11 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
 
         fun stop(context: Context) {
             running = false
-            context.startService(
-                Intent(context, SingBoxVpnService::class.java).apply { action = ACTION_STOP }
-            )
+            runCatching {
+                context.startService(
+                    Intent(context, SingBoxVpnService::class.java).apply { action = ACTION_STOP }
+                )
+            }
         }
 
         fun isRunning(): Boolean = running
