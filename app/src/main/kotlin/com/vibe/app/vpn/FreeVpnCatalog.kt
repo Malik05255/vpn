@@ -20,13 +20,9 @@ import kotlin.math.min
 /**
  * Discovers free public relays, but never trusts a filename/remark as proof of the exit country.
  *
- * There are two evidence levels:
- * 1) LIVE_COUNTRY_API: a live provider currently reports the proxy in the selected country.
- * 2) LABEL_ONLY: community V2Ray feeds that merely place a config under a country filename.
- *    These are endpoint-geolocated before they are even allowed into the expensive tunnel stage.
- *
- * The final full-device connection still has to pass ConnectionQualityClient.verify(country), so
- * even a bad/stale provider classification cannot be presented to the user as a successful VPN.
+ * Live provider APIs are preferred. Community country files are treated only as hints and their
+ * endpoints are geolocated before they may enter the expensive full-device tunnel stage.
+ * The final tunnel must still prove the selected exit country after it is running.
  */
 class FreeVpnCatalog {
     suspend fun discover(country: VpnCountry): List<FreeVpnCandidate> = withContext(Dispatchers.IO) {
@@ -41,6 +37,7 @@ class FreeVpnCatalog {
                         .lineSequence()
                         .map(String::trim)
                         .filter { line -> line.isNotEmpty() && !line.startsWith('#') }
+                        .map { line -> source.normalize(line) }
                         .mapNotNull { line -> ProxyShareParser.parse(line, source.id) }
                         .filter { candidate -> candidate.isSafePublicEndpoint() }
                         .map { candidate -> candidate.copy(countryEvidence = source.countryEvidence) }
@@ -101,7 +98,35 @@ class FreeVpnCatalog {
         val upperCode = country.code.uppercase()
         val lowerCode = country.code.lowercase()
         val countryName = country.displayNameEn
+        val hproxyBase = "https://hproxy.com/api/proxy-list?format=txt&country=$upperCode&limit=100"
+
         return listOf(
+            // HProxy checks the free pool continuously. Its TXT format is ip:port, so each request
+            // is protocol-specific and normalized to a standard share URI before parsing.
+            CatalogSource(
+                id = "hproxy-http-live",
+                url = "$hproxyBase&protocol=http",
+                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
+                linePrefix = "http://",
+            ),
+            CatalogSource(
+                id = "hproxy-https-live",
+                url = "$hproxyBase&protocol=https",
+                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
+                linePrefix = "https://",
+            ),
+            CatalogSource(
+                id = "hproxy-socks5-live",
+                url = "$hproxyBase&protocol=socks5",
+                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
+                linePrefix = "socks5://",
+            ),
+            CatalogSource(
+                id = "hproxy-socks4-live",
+                url = "$hproxyBase&protocol=socks4",
+                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
+                linePrefix = "socks4://",
+            ),
             CatalogSource(
                 id = "proxyscrape-live-country",
                 url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&proxy_format=protocolipport&format=text&country=$lowerCode&timeout=10000",
@@ -143,7 +168,7 @@ class FreeVpnCatalog {
             useCaches = false
             instanceFollowRedirects = true
             setRequestProperty("Accept", "text/plain,application/json;q=0.8,*/*;q=0.2")
-            setRequestProperty("User-Agent", "ArabVPN/1.1 Android")
+            setRequestProperty("User-Agent", "ArabVPN/1.2 Android")
         }
         return try {
             val code = connection.responseCode
@@ -176,7 +201,7 @@ class FreeVpnCatalog {
             requestMethod = "GET"
             useCaches = false
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ArabVPN/1.1 Android")
+            setRequestProperty("User-Agent", "ArabVPN/1.2 Android")
         }
         return try {
             if (connection.responseCode !in 200..299) return false
@@ -204,9 +229,8 @@ class FreeVpnCatalog {
         ProxyProtocol.HTTP -> httpConnectPreflight(candidate)
         ProxyProtocol.SOCKS5 -> socks5Preflight(candidate)
         ProxyProtocol.SOCKS4 -> socks4Preflight(candidate)
-        // Hysteria2 and TUIC are QUIC/UDP protocols. A TCP connect test would reject every valid
-        // node by definition. DNS/public-endpoint resolution is the safe cheap preflight; libbox
-        // config validation + the time-bounded real tunnel attempt performs the protocol handshake.
+        // QUIC/UDP nodes cannot be judged with a TCP-open probe. Real handshake validation happens
+        // in the isolated libbox runtime and is time-bounded by AutomaticVpnManager.
         ProxyProtocol.HYSTERIA2, ProxyProtocol.TUIC -> udpEndpointPreflight(candidate.server, candidate.port)
         else -> tcpPreflight(candidate.server, candidate.port)
     }
@@ -343,7 +367,13 @@ class FreeVpnCatalog {
         val id: String,
         val url: String,
         val countryEvidence: CountryEvidence,
-    )
+        val linePrefix: String? = null,
+    ) {
+        fun normalize(line: String): String {
+            if (linePrefix == null || "://" in line) return line
+            return "$linePrefix$line"
+        }
+    }
 
     companion object {
         private const val FETCH_TIMEOUT_MS = 7_000
@@ -353,11 +383,11 @@ class FreeVpnCatalog {
         private const val MAX_SOURCE_BYTES = 4L * 1024L * 1024L
         private const val MAX_GEO_RESPONSE_CHARS = 8_192
         private const val MAX_PER_SOURCE = 80
-        private const val MAX_PREFLIGHT_CANDIDATES = 220
+        private const val MAX_PREFLIGHT_CANDIDATES = 260
         private const val MAX_LABEL_GEO_CANDIDATES = 48
         private const val MAX_GEO_CONCURRENCY = 6
         private const val MAX_PREFLIGHT_CONCURRENCY = 18
-        const val MAX_CONNECT_ATTEMPTS = 24
+        const val MAX_CONNECT_ATTEMPTS = 30
         private val COUNTRY_CODE_REGEX = Regex("\\\"country_code\\\"\\s*:\\s*\\\"([A-Za-z]{2})\\\"")
     }
 }
