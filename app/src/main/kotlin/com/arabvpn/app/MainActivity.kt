@@ -30,8 +30,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
-        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
 
         setContent {
             val state = vpnViewModel.uiState.collectAsStateWithLifecycle().value
@@ -57,7 +57,9 @@ class MainActivity : ComponentActivity() {
                 PackageManager.PERMISSION_GRANTED
             ) {
                 androidx.compose.runtime.LaunchedEffect(Unit) {
-                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    runCatching {
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
                 }
             }
 
@@ -68,11 +70,15 @@ class MainActivity : ComponentActivity() {
                     state = state,
                     onCountrySelected = vpnViewModel::selectCountry,
                     onConnect = {
-                        val permissionIntent = vpnViewModel.prepareVpnPermission()
-                        if (permissionIntent == null) {
-                            vpnViewModel.connectAuthorized()
-                        } else {
-                            vpnPermissionLauncher.launch(permissionIntent)
+                        runCatching {
+                            val permissionIntent = vpnViewModel.prepareVpnPermission()
+                            if (permissionIntent == null) {
+                                vpnViewModel.connectAuthorized()
+                            } else {
+                                vpnPermissionLauncher.launch(permissionIntent)
+                            }
+                        }.onFailure {
+                            vpnViewModel.onConnectionLaunchFailure(it)
                         }
                     },
                     onDisconnect = vpnViewModel::disconnect,
@@ -86,6 +92,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        vpnViewModel.retryLocationSyncIfNeeded()
+        runCatching { vpnViewModel.retryLocationSyncIfNeeded() }
     }
 }
