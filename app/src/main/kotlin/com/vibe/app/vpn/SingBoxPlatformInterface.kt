@@ -181,13 +181,13 @@ internal class SingBoxPlatformInterface(
                 name = networkInterface.name
                 mtu = runCatching { networkInterface.mtu }.getOrDefault(0)
                 addresses = networkInterface.interfaceAddresses
-                    .map(InterfaceAddress::toPrefix)
+                    .map { address -> address.toLibboxPrefix() }
                     .toLibboxStringIterator()
                 flags = networkInterface.toFlags()
                 type = androidNetwork?.second?.toLibboxInterfaceType()
                     ?: io.nekohasekai.libbox.Libbox.InterfaceTypeOther
                 dnsServer = androidNetwork?.first?.dnsServers.orEmpty()
-                    .mapNotNull(InetAddress::getHostAddress)
+                    .mapNotNull { address -> address.hostAddress }
                     .toLibboxStringIterator()
                 metered = androidNetwork?.second
                     ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
@@ -242,7 +242,7 @@ internal class SingBoxPlatformInterface(
         return value
     }
 
-    private fun InterfaceAddress.toPrefix(): String {
+    private fun InterfaceAddress.toLibboxPrefix(): String {
         val host = if (address is Inet6Address) {
             Inet6Address.getByAddress(address.address).hostAddress
         } else {
@@ -339,7 +339,7 @@ private class AndroidLocalDnsTransport(
                 val callback = object : DnsResolver.Callback<Collection<InetAddress>> {
                     override fun onAnswer(answer: Collection<InetAddress>, rcode: Int) {
                         if (rcode == 0) {
-                            context.success(answer.mapNotNull(InetAddress::getHostAddress).joinToString("\n"))
+                            context.success(answer.mapNotNull { address -> address.hostAddress }.joinToString("\n"))
                         } else context.errorCode(rcode)
                         continuation.resume(Unit)
                     }
@@ -375,7 +375,7 @@ private class AndroidLocalDnsTransport(
                 context.errorCode(3)
                 return@runBlocking
             }
-            context.success(answer.mapNotNull(InetAddress::getHostAddress).joinToString("\n"))
+            context.success(answer.mapNotNull { address -> address.hostAddress }.joinToString("\n"))
         }
     }
 }
