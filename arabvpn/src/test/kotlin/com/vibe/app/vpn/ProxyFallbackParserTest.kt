@@ -38,6 +38,40 @@ class ProxyFallbackParserTest {
     }
 
     @Test
+    fun parsesHysteria2WithSalamanderObfs() {
+        val candidate = requireNotNull(
+            ProxyShareParser.parse(
+                "hysteria2://secret@example.com:443?sni=cdn.example.com&insecure=1&obfs=salamander&obfs-password=mask#hy2",
+                sourceId = "argh73-country",
+            )
+        )
+
+        assertEquals(ProxyProtocol.HYSTERIA2, candidate.protocol)
+        assertTrue(candidate.outboundJson.contains("\"type\":\"hysteria2\""))
+        assertTrue(candidate.outboundJson.contains("\"password\":\"secret\""))
+        assertTrue(candidate.outboundJson.contains("\"type\":\"salamander\""))
+        assertTrue(candidate.outboundJson.contains("\"server_name\":\"cdn.example.com\""))
+        assertTrue(candidate.outboundJson.contains("\"insecure\":true"))
+    }
+
+    @Test
+    fun parsesTuicCredentialsAndTls() {
+        val candidate = requireNotNull(
+            ProxyShareParser.parse(
+                "tuic://550e8400-e29b-41d4-a716-446655440000:secret@example.com:443?sni=cdn.example.com&congestion_control=bbr&udp_relay_mode=native#tuic",
+                sourceId = "country-feed",
+            )
+        )
+
+        assertEquals(ProxyProtocol.TUIC, candidate.protocol)
+        assertTrue(candidate.outboundJson.contains("\"type\":\"tuic\""))
+        assertTrue(candidate.outboundJson.contains("\"uuid\":\"550e8400-e29b-41d4-a716-446655440000\""))
+        assertTrue(candidate.outboundJson.contains("\"password\":\"secret\""))
+        assertTrue(candidate.outboundJson.contains("\"congestion_control\":\"bbr\""))
+        assertTrue(candidate.outboundJson.contains("\"udp_relay_mode\":\"native\""))
+    }
+
+    @Test
     fun rawTcpVlessOmitsInvalidEmptyTransportObject() {
         val candidate = requireNotNull(
             ProxyShareParser.parse(
@@ -74,10 +108,11 @@ class ProxyFallbackParserTest {
                 "http://41.65.103.190:8080",
                 sourceId = "proxifly-country",
             )
-        )
+        ).copy(countryEvidence = CountryEvidence.LIVE_COUNTRY_API)
 
         val config = SingBoxConfigBuilder.build(candidate)
 
+        assertEquals(CountryEvidence.LIVE_COUNTRY_API, candidate.countryEvidence)
         assertTrue(config.contains("\"type\":\"tun\""))
         assertTrue(config.contains("\"type\":\"http\""))
         assertTrue(config.contains("\"final\":\"country-proxy\""))

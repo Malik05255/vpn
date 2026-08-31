@@ -18,16 +18,16 @@ import java.nio.charset.StandardCharsets
 import kotlin.math.min
 
 /**
- * Downloads public, zero-cost proxy/VPN candidates from multiple independent feeds.
+ * Discovers free public relays, but never trusts a filename/remark as proof of the exit country.
  *
- * Feed labels are discovery hints only. Every final connection still has to prove its exit country
- * after the full-device VPN is running.
+ * Live provider APIs are preferred. Community country files are treated only as hints and their
+ * endpoints are geolocated before they may enter the expensive full-device tunnel stage.
+ * The final tunnel must still prove the selected exit country after it is running.
  */
 class FreeVpnCatalog {
     suspend fun discover(country: VpnCountry): List<FreeVpnCandidate> = withContext(Dispatchers.IO) {
         val sources = sourcesFor(country)
 
-        // Fetch independent feeds concurrently. Slow/404 feeds no longer delay every other source.
         val sourceCandidates = coroutineScope {
             sources.map { source ->
                 async(Dispatchers.IO) {
@@ -37,8 +37,10 @@ class FreeVpnCatalog {
                         .lineSequence()
                         .map(String::trim)
                         .filter { line -> line.isNotEmpty() && !line.startsWith('#') }
+                        .map { line -> source.normalize(line) }
                         .mapNotNull { line -> ProxyShareParser.parse(line, source.id) }
                         .filter { candidate -> candidate.isSafePublicEndpoint() }
+                        .map { candidate -> candidate.copy(countryEvidence = source.countryEvidence) }
                         .distinctBy { candidate -> candidate.fingerprint }
                         .take(MAX_PER_SOURCE)
                         .toList()
@@ -46,16 +48,34 @@ class FreeVpnCatalog {
             }.awaitAll()
         }
 
-        // Interleave feeds before the global preflight cap. The previous source-by-source flattening
-        // allowed one large feed to consume the whole test budget and starve the other countries'
-        // healthier sources.
         val raw = roundRobin(sourceCandidates)
             .distinctBy { candidate -> candidate.fingerprint }
             .take(MAX_PREFLIGHT_CANDIDATES)
 
+        val geoBudget = Semaphore(MAX_GEO_CONCURRENCY)
+        val geoChecked = coroutineScope {
+            var labelBudgetUsed = 0
+            raw.map { candidate ->
+                val shouldGeoCheck = candidate.countryEvidence == CountryEvidence.LABEL_ONLY &&
+                    labelBudgetUsed++ < MAX_LABEL_GEO_CANDIDATES
+                if (!shouldGeoCheck) {
+                    async(Dispatchers.IO) {
+                        if (candidate.countryEvidence == CountryEvidence.LABEL_ONLY) null else candidate
+                    }
+                } else {
+                    async(Dispatchers.IO) {
+                        geoBudget.withPermit {
+                            candidate.takeIf { endpointCountryMatches(it, country) }
+                                ?.copy(countryEvidence = CountryEvidence.ENDPOINT_GEO_VERIFIED)
+                        }
+                    }
+                }
+            }.awaitAll().filterNotNull()
+        }
+
         val limiter = Semaphore(MAX_PREFLIGHT_CONCURRENCY)
         val preflighted = coroutineScope {
-            raw.map { candidate ->
+            geoChecked.map { candidate ->
                 async(Dispatchers.IO) {
                     limiter.withPermit {
                         candidate.copy(preflightLatencyMs = protocolPreflight(candidate))
@@ -67,7 +87,8 @@ class FreeVpnCatalog {
         preflighted
             .filter { it.preflightLatencyMs != null }
             .sortedWith(
-                compareBy<FreeVpnCandidate> { protocolPriority(it.protocol) }
+                compareBy<FreeVpnCandidate> { evidencePriority(it.countryEvidence) }
+                    .thenBy { protocolPriority(it.protocol) }
                     .thenBy { it.preflightLatencyMs ?: Long.MAX_VALUE }
             )
             .take(MAX_CONNECT_ATTEMPTS)
@@ -77,28 +98,64 @@ class FreeVpnCatalog {
         val upperCode = country.code.uppercase()
         val lowerCode = country.code.lowercase()
         val countryName = country.displayNameEn
+        val hproxyBase = "https://hproxy.com/api/proxy-list?format=txt&country=$upperCode&limit=100"
+
         return listOf(
-            // Actively maintained multi-source collector. This is important for Jordan where the
-            // older feeds frequently have no country file at all.
+            // HProxy checks the free pool continuously. Its TXT format is ip:port, so each request
+            // is protocol-specific and normalized to a standard share URI before parsing.
+            CatalogSource(
+                id = "hproxy-http-live",
+                url = "$hproxyBase&protocol=http",
+                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
+                linePrefix = "http://",
+            ),
+            CatalogSource(
+                id = "hproxy-https-live",
+                url = "$hproxyBase&protocol=https",
+                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
+                linePrefix = "https://",
+            ),
+            CatalogSource(
+                id = "hproxy-socks5-live",
+                url = "$hproxyBase&protocol=socks5",
+                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
+                linePrefix = "socks5://",
+            ),
+            CatalogSource(
+                id = "hproxy-socks4-live",
+                url = "$hproxyBase&protocol=socks4",
+                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
+                linePrefix = "socks4://",
+            ),
+            CatalogSource(
+                id = "proxyscrape-live-country",
+                url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&proxy_format=protocolipport&format=text&country=$lowerCode&timeout=10000",
+                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
+            ),
+            CatalogSource(
+                id = "proxyscrape-country-mirror",
+                url = "https://raw.githubusercontent.com/ProxyScrape/free-proxy-list/main/proxies/countries/$lowerCode/data.txt",
+                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
+            ),
             CatalogSource(
                 id = "argh73-country",
                 url = "https://raw.githubusercontent.com/Argh73/VpnConfigCollector/refs/heads/main/Splitted-By-Country/$countryName.txt",
+                countryEvidence = CountryEvidence.LABEL_ONLY,
             ),
             CatalogSource(
                 id = "argh94-country",
                 url = "https://raw.githubusercontent.com/Argh94/V2RayAutoConfig/main/configs/$countryName.txt",
+                countryEvidence = CountryEvidence.LABEL_ONLY,
             ),
             CatalogSource(
                 id = "collector-country",
                 url = "https://raw.githubusercontent.com/217CnoC/configs-collector-v2ray/main/sub/countries/$upperCode.txt",
-            ),
-            CatalogSource(
-                id = "proxyscrape-country",
-                url = "https://raw.githubusercontent.com/ProxyScrape/free-proxy-list/main/proxies/countries/$lowerCode/data.txt",
+                countryEvidence = CountryEvidence.LABEL_ONLY,
             ),
             CatalogSource(
                 id = "proxifly-country",
                 url = "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/countries/$upperCode/data.txt",
+                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
             ),
         )
     }
@@ -110,8 +167,8 @@ class FreeVpnCatalog {
             requestMethod = "GET"
             useCaches = false
             instanceFollowRedirects = true
-            setRequestProperty("Accept", "text/plain")
-            setRequestProperty("User-Agent", "ArabVPN/1.0 Android")
+            setRequestProperty("Accept", "text/plain,application/json;q=0.8,*/*;q=0.2")
+            setRequestProperty("User-Agent", "ArabVPN/1.2 Android")
         }
         return try {
             val code = connection.responseCode
@@ -136,11 +193,52 @@ class FreeVpnCatalog {
         }
     }
 
+    private fun endpointCountryMatches(candidate: FreeVpnCandidate, country: VpnCountry): Boolean {
+        val address = resolvePublicAddress(candidate.server) ?: return false
+        val connection = (URL("https://ipwho.is/${address.hostAddress}").openConnection() as HttpURLConnection).apply {
+            connectTimeout = GEO_TIMEOUT_MS
+            readTimeout = GEO_TIMEOUT_MS
+            requestMethod = "GET"
+            useCaches = false
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("User-Agent", "ArabVPN/1.2 Android")
+        }
+        return try {
+            if (connection.responseCode !in 200..299) return false
+            val body = connection.inputStream.bufferedReader().use { it.readText().take(MAX_GEO_RESPONSE_CHARS) }
+            val reported = COUNTRY_CODE_REGEX.find(body)?.groupValues?.getOrNull(1)
+            reported.equals(country.code, ignoreCase = true)
+        } catch (_: Throwable) {
+            false
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun resolvePublicAddress(host: String): InetAddress? = runCatching {
+        InetAddress.getAllByName(host).firstOrNull { address ->
+            !address.isAnyLocalAddress &&
+                !address.isLoopbackAddress &&
+                !address.isLinkLocalAddress &&
+                !address.isSiteLocalAddress &&
+                !address.isMulticastAddress
+        }
+    }.getOrNull()
+
     private fun protocolPreflight(candidate: FreeVpnCandidate): Long? = when (candidate.protocol) {
         ProxyProtocol.HTTP -> httpConnectPreflight(candidate)
         ProxyProtocol.SOCKS5 -> socks5Preflight(candidate)
         ProxyProtocol.SOCKS4 -> socks4Preflight(candidate)
+        // QUIC/UDP nodes cannot be judged with a TCP-open probe. Real handshake validation happens
+        // in the isolated libbox runtime and is time-bounded by AutomaticVpnManager.
+        ProxyProtocol.HYSTERIA2, ProxyProtocol.TUIC -> udpEndpointPreflight(candidate.server, candidate.port)
         else -> tcpPreflight(candidate.server, candidate.port)
+    }
+
+    private fun udpEndpointPreflight(host: String, port: Int): Long? {
+        if (port !in 1..65535) return null
+        val started = System.nanoTime()
+        return resolvePublicAddress(host)?.let { elapsedMs(started) }
     }
 
     private fun tcpPreflight(host: String, port: Int): Long? {
@@ -154,7 +252,6 @@ class FreeVpnCatalog {
         }.getOrNull()
     }
 
-    /** A TCP-open HTTP proxy is useless if it cannot establish CONNECT to HTTPS. */
     private fun httpConnectPreflight(candidate: FreeVpnCandidate): Long? {
         val started = System.nanoTime()
         return runCatching {
@@ -232,14 +329,23 @@ class FreeVpnCatalog {
         return true
     }
 
+    private fun evidencePriority(evidence: CountryEvidence): Int = when (evidence) {
+        CountryEvidence.LIVE_COUNTRY_API -> 0
+        CountryEvidence.ENDPOINT_GEO_VERIFIED -> 1
+        CountryEvidence.LABEL_ONLY -> 2
+        CountryEvidence.UNKNOWN -> 3
+    }
+
     private fun protocolPriority(protocol: ProxyProtocol): Int = when (protocol) {
-        ProxyProtocol.VLESS -> 0
-        ProxyProtocol.TROJAN -> 1
-        ProxyProtocol.SHADOWSOCKS -> 2
-        ProxyProtocol.VMESS -> 3
-        ProxyProtocol.SOCKS5 -> 4
-        ProxyProtocol.HTTP -> 5
-        ProxyProtocol.SOCKS4 -> 6
+        ProxyProtocol.HYSTERIA2 -> 0
+        ProxyProtocol.TUIC -> 1
+        ProxyProtocol.VLESS -> 2
+        ProxyProtocol.TROJAN -> 3
+        ProxyProtocol.SHADOWSOCKS -> 4
+        ProxyProtocol.VMESS -> 5
+        ProxyProtocol.SOCKS5 -> 6
+        ProxyProtocol.HTTP -> 7
+        ProxyProtocol.SOCKS4 -> 8
     }
 
     private fun <T> roundRobin(groups: List<List<T>>): List<T> = buildList {
@@ -257,17 +363,32 @@ class FreeVpnCatalog {
         }
     }
 
-    private data class CatalogSource(val id: String, val url: String)
+    private data class CatalogSource(
+        val id: String,
+        val url: String,
+        val countryEvidence: CountryEvidence,
+        val linePrefix: String? = null,
+    ) {
+        fun normalize(line: String): String {
+            if (linePrefix == null || "://" in line) return line
+            return "$linePrefix$line"
+        }
+    }
 
     companion object {
         private const val FETCH_TIMEOUT_MS = 7_000
+        private const val GEO_TIMEOUT_MS = 2_500
         private const val PREFLIGHT_TIMEOUT_MS = 2_000
         private const val PROTOCOL_PREFLIGHT_TIMEOUT_MS = 2_500
         private const val MAX_SOURCE_BYTES = 4L * 1024L * 1024L
-        private const val MAX_PER_SOURCE = 60
-        private const val MAX_PREFLIGHT_CANDIDATES = 180
+        private const val MAX_GEO_RESPONSE_CHARS = 8_192
+        private const val MAX_PER_SOURCE = 80
+        private const val MAX_PREFLIGHT_CANDIDATES = 260
+        private const val MAX_LABEL_GEO_CANDIDATES = 48
+        private const val MAX_GEO_CONCURRENCY = 6
         private const val MAX_PREFLIGHT_CONCURRENCY = 18
-        const val MAX_CONNECT_ATTEMPTS = 18
+        const val MAX_CONNECT_ATTEMPTS = 30
+        private val COUNTRY_CODE_REGEX = Regex("\\\"country_code\\\"\\s*:\\s*\\\"([A-Za-z]{2})\\\"")
     }
 }
 
@@ -279,12 +400,22 @@ data class FreeVpnCandidate(
     val sourceId: String,
     val displayName: String,
     val preflightLatencyMs: Long? = null,
+    val countryEvidence: CountryEvidence = CountryEvidence.UNKNOWN,
 ) {
     val fingerprint: String
         get() = "${protocol.name}|${server.lowercase()}|$port|$outboundJson"
 }
 
+enum class CountryEvidence {
+    UNKNOWN,
+    LABEL_ONLY,
+    LIVE_COUNTRY_API,
+    ENDPOINT_GEO_VERIFIED,
+}
+
 enum class ProxyProtocol {
+    HYSTERIA2,
+    TUIC,
     TROJAN,
     VLESS,
     SHADOWSOCKS,
