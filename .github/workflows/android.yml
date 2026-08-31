@@ -83,7 +83,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: |
-            set -euo pipefail
+            set -eu
             APK="arabvpn/build/outputs/apk/debug/arabvpn-debug.apk"
             adb logcat -c
             adb install -r "$APK"
