@@ -1,13 +1,17 @@
 package com.arabvpn.app.update
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.work.ForegroundInfo
 import com.arabvpn.app.MainActivity
 import com.vibe.app.R
@@ -33,7 +37,7 @@ object UpdateNotifications {
     }
 
     fun showAvailable(context: Context, manifest: UpdateManifest) {
-        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
+        if (!canPostNotifications(context)) return
 
         val openIntent = PendingIntent.getActivity(
             context,
@@ -60,7 +64,7 @@ object UpdateNotifications {
             .setOnlyAlertOnce(true)
             .build()
 
-        NotificationManagerCompat.from(context).notify(AVAILABLE_ID, notification)
+        notifySafely(context, AVAILABLE_ID, notification)
     }
 
     fun downloadingForeground(context: Context, progress: Int): ForegroundInfo {
@@ -80,6 +84,8 @@ object UpdateNotifications {
     }
 
     fun showReady(context: Context, apk: File, manifest: UpdateManifest, usedDelta: Boolean) {
+        if (!canPostNotifications(context)) return
+
         val installIntent = PendingIntent.getActivity(
             context,
             manifest.versionCode,
@@ -101,17 +107,38 @@ object UpdateNotifications {
             .setOnlyAlertOnce(true)
             .build()
 
-        NotificationManagerCompat.from(context).notify(READY_ID, notification)
+        notifySafely(context, READY_ID, notification)
     }
 
     fun showFailure(context: Context, message: String) {
-        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
+        if (!canPostNotifications(context)) return
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_arab_vpn)
             .setContentTitle("تعذر تحديث Arab VPN")
             .setContentText(message)
             .setAutoCancel(true)
             .build()
-        NotificationManagerCompat.from(context).notify(READY_ID, notification)
+        notifySafely(context, READY_ID, notification)
+    }
+
+    private fun canPostNotifications(context: Context): Boolean {
+        val runtimePermissionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        return runtimePermissionGranted &&
+            NotificationManagerCompat.from(context).areNotificationsEnabled()
+    }
+
+    private fun notifySafely(
+        context: Context,
+        id: Int,
+        notification: android.app.Notification,
+    ) {
+        if (!canPostNotifications(context)) return
+        try {
+            NotificationManagerCompat.from(context).notify(id, notification)
+        } catch (_: SecurityException) {
+            // Permission can be revoked between the check and the notify call.
+        }
     }
 }
