@@ -15,11 +15,13 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.vibe.app"
+        // Arab VPN is a completely separate Android application from VibeApp.
+        // Keeping a distinct applicationId allows both apps to be installed side-by-side.
+        applicationId = "com.malik05255.arabvpn"
         minSdk = 29
         targetSdk = 36
-        versionCode = 15
-        versionName = "1.9.0"
+        versionCode = 1
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -158,6 +160,11 @@ dependencies {
 
     // HTML parsing (web search)
     implementation(libs.jsoup)
+
+    // Update engine: WorkManager checks periodically; bsdiff reconstructs the new APK from
+    // the installed APK plus the small binary difference when a delta is available.
+    implementation("androidx.work:work-runtime-ktx:2.10.1")
+    implementation("com.tencent.tinker:bsdiff-util:1.9.15.2")
 
     // WireGuard remains available as a private/manual fallback.
     implementation("com.wireguard.android:tunnel:1.0.20230706")
