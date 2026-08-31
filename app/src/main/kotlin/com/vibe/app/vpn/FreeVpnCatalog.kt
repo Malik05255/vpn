@@ -46,16 +46,17 @@ class FreeVpnCatalog {
         preflighted
             .filter { it.preflightLatencyMs != null }
             .sortedWith(
-                compareBy<FreeVpnCandidate> { it.preflightLatencyMs ?: Long.MAX_VALUE }
-                    .thenBy { protocolPriority(it.protocol) }
+                compareBy<FreeVpnCandidate> { protocolPriority(it.protocol) }
+                    .thenBy { it.preflightLatencyMs ?: Long.MAX_VALUE }
             )
             .take(MAX_CONNECT_ATTEMPTS)
     }
 
     private fun sourcesFor(country: VpnCountry): List<CatalogSource> {
-        val code = country.code.uppercase()
+        val upperCode = country.code.uppercase()
+        val lowerCode = country.code.lowercase()
         return buildList {
-            // Fresh country-classified feed. Missing country files simply return 404 and are skipped.
+            // Country-classified V2Ray/Trojan feed. Geography is still verified after connection.
             add(
                 CatalogSource(
                     id = "argh94-country",
@@ -63,24 +64,28 @@ class FreeVpnCatalog {
                 )
             )
 
-            // Secondary country feed. It is less fresh, so it is never trusted without post-connect geo proof.
+            // Older V2Ray country feed retained as an independent fallback.
             add(
                 CatalogSource(
                     id = "collector-country",
-                    url = "https://raw.githubusercontent.com/217CnoC/configs-collector-v2ray/main/sub/countries/$code.txt",
+                    url = "https://raw.githubusercontent.com/217CnoC/configs-collector-v2ray/main/sub/countries/$upperCode.txt",
                 )
             )
 
-            // For Egypt, the fresh feed currently has direct Cairo candidates. Keep a second explicit
-            // path as redundancy in case the first repository layout changes.
-            if (country == VpnCountry.EGYPT) {
-                add(
-                    CatalogSource(
-                        id = "argh94-egypt-fallback",
-                        url = "https://raw.githubusercontent.com/Argh94/V2RayAutoConfig/main/configs/Egypt.txt",
-                    )
+            // Frequently refreshed mixed-protocol country pool. These feeds are especially useful
+            // in countries where public V2Ray nodes are scarce (Egypt currently falls in this case).
+            add(
+                CatalogSource(
+                    id = "proxyscrape-country",
+                    url = "https://raw.githubusercontent.com/ProxyScrape/free-proxy-list/main/proxies/countries/$lowerCode/data.txt",
                 )
-            }
+            )
+            add(
+                CatalogSource(
+                    id = "proxifly-country",
+                    url = "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/countries/$upperCode/data.txt",
+                )
+            )
         }
     }
 
@@ -144,11 +149,18 @@ class FreeVpnCatalog {
         return true
     }
 
+    /**
+     * Prefer VPN-native protocols. HTTP/SOCKS are deliberately last-resort fallbacks because
+     * free public pools for some Arab countries expose far more of those endpoints.
+     */
     private fun protocolPriority(protocol: ProxyProtocol): Int = when (protocol) {
         ProxyProtocol.TROJAN -> 0
         ProxyProtocol.VLESS -> 1
         ProxyProtocol.SHADOWSOCKS -> 2
         ProxyProtocol.VMESS -> 3
+        ProxyProtocol.SOCKS5 -> 4
+        ProxyProtocol.HTTP -> 5
+        ProxyProtocol.SOCKS4 -> 6
     }
 
     private data class CatalogSource(val id: String, val url: String)
@@ -157,9 +169,9 @@ class FreeVpnCatalog {
         private const val FETCH_TIMEOUT_MS = 7_000
         private const val PREFLIGHT_TIMEOUT_MS = 1_800
         private const val MAX_SOURCE_BYTES = 2L * 1024L * 1024L
-        private const val MAX_PER_SOURCE = 100
-        private const val MAX_PREFLIGHT_CANDIDATES = 40
-        const val MAX_CONNECT_ATTEMPTS = 8
+        private const val MAX_PER_SOURCE = 40
+        private const val MAX_PREFLIGHT_CANDIDATES = 120
+        const val MAX_CONNECT_ATTEMPTS = 18
     }
 }
 
@@ -181,4 +193,7 @@ enum class ProxyProtocol {
     VLESS,
     SHADOWSOCKS,
     VMESS,
+    SOCKS5,
+    HTTP,
+    SOCKS4,
 }
