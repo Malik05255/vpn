@@ -21,6 +21,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.vibe.app.vpn.SingBoxVpnService
 import com.vibe.app.vpn.VpnScreen
 import com.vibe.app.vpn.VpnViewModel
 
@@ -105,6 +106,7 @@ class MainActivity : ComponentActivity() {
                             TextButton(
                                 onClick = {
                                     vpnViewModel.dismissBackgroundPrompt()
+                                    SingBoxVpnService.enterBackgroundMode(this@MainActivity)
                                     finishAndRemoveTask()
                                 }
                             ) {
