@@ -19,9 +19,7 @@ class VpnProfileStore(context: Context) {
     }
 
     fun import(country: VpnCountry, source: InputStream) {
-        val bytes = source.readBytes(MAX_PROFILE_BYTES + 1)
-        require(bytes.size <= MAX_PROFILE_BYTES) { "WireGuard configuration is too large" }
-
+        val bytes = source.readLimited(MAX_PROFILE_BYTES)
         val text = bytes.toString(StandardCharsets.UTF_8).trim()
         validateFullTunnelProfile(text)
 
@@ -59,7 +57,7 @@ class VpnProfileStore(context: Context) {
         }
     }
 
-    private fun InputStream.readBytes(maxBytes: Int): ByteArray {
+    private fun InputStream.readLimited(maxBytes: Int): ByteArray {
         val buffer = ByteArray(8 * 1024)
         val out = java.io.ByteArrayOutputStream()
         var total = 0
@@ -67,7 +65,7 @@ class VpnProfileStore(context: Context) {
             val read = read(buffer)
             if (read <= 0) break
             total += read
-            if (total > maxBytes) break
+            require(total <= maxBytes) { "WireGuard configuration is too large" }
             out.write(buffer, 0, read)
         }
         return out.toByteArray()
