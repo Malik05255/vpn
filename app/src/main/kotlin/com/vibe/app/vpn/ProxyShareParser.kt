@@ -23,6 +23,10 @@ object ProxyShareParser {
             raw.startsWith("vless://", ignoreCase = true) -> parseVless(raw, sourceId)
             raw.startsWith("ss://", ignoreCase = true) -> parseShadowsocks(raw, sourceId)
             raw.startsWith("vmess://", ignoreCase = true) -> parseVmess(raw, sourceId)
+            raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true) ->
+                parseHttpProxy(raw, sourceId)
+            raw.startsWith("socks5://", ignoreCase = true) -> parseSocksProxy(raw, sourceId, version = "5")
+            raw.startsWith("socks4://", ignoreCase = true) -> parseSocksProxy(raw, sourceId, version = "4")
             else -> null
         }
     }.getOrNull()
@@ -102,7 +106,7 @@ object ProxyShareParser {
 
         // Legacy form: ss://BASE64(method:password@host:port)
         if (host == null || port !in 1..65535 || credentials.isNullOrBlank()) {
-            val payload = raw.removePrefix("ss://").substringBefore('#').substringBefore('?')
+            val payload = raw.substringAfter("://").substringBefore('#').substringBefore('?')
             val decoded = decodeBase64(payload) ?: return null
             val at = decoded.lastIndexOf('@')
             if (at <= 0) return null
@@ -132,7 +136,7 @@ object ProxyShareParser {
     }
 
     private fun parseVmess(raw: String, sourceId: String): FreeVpnCandidate? {
-        val encoded = raw.removePrefix("vmess://").substringBefore('#').trim()
+        val encoded = raw.substringAfter("://").substringBefore('#').trim()
         val decoded = decodeBase64(encoded) ?: return null
         val objectValue = json.parseToJsonElement(decoded).jsonObject
         val host = objectValue.string("add")
@@ -173,6 +177,58 @@ object ProxyShareParser {
             sourceId = sourceId,
             displayName = name.ifBlank { "$host:$port" },
         )
+    }
+
+    /**
+     * Public country feeds frequently expose HTTP CONNECT endpoints instead of V2Ray links.
+     * These are used only as a last-resort transport and still have to pass the same post-connect
+     * country and quality verification as every other candidate.
+     */
+    private fun parseHttpProxy(raw: String, sourceId: String): FreeVpnCandidate? {
+        val uri = URI(raw)
+        val host = uri.host ?: return null
+        val port = uri.port.takeIf { it in 1..65535 } ?: return null
+        val credentials = uri.rawUserInfo?.percentDecode()
+        val username = credentials?.substringBefore(':')?.takeIf(String::isNotBlank)
+        val password = credentials?.substringAfter(':', "")?.takeIf(String::isNotBlank)
+        val tlsToProxy = uri.scheme.equals("https", ignoreCase = true)
+
+        val outbound = buildJsonObject {
+            put("type", "http")
+            put("tag", OUTBOUND_TAG)
+            put("server", host)
+            put("server_port", port)
+            username?.let { put("username", it) }
+            password?.let { put("password", it) }
+            if (tlsToProxy) {
+                putJsonObject("tls") {
+                    put("enabled", true)
+                    put("server_name", host)
+                }
+            }
+        }
+        return candidate(ProxyProtocol.HTTP, host, port, outbound, sourceId, uri.rawFragment)
+    }
+
+    private fun parseSocksProxy(raw: String, sourceId: String, version: String): FreeVpnCandidate? {
+        val uri = URI(raw)
+        val host = uri.host ?: return null
+        val port = uri.port.takeIf { it in 1..65535 } ?: return null
+        val credentials = uri.rawUserInfo?.percentDecode()
+        val username = credentials?.substringBefore(':')?.takeIf(String::isNotBlank)
+        val password = credentials?.substringAfter(':', "")?.takeIf(String::isNotBlank)
+        val protocol = if (version == "5") ProxyProtocol.SOCKS5 else ProxyProtocol.SOCKS4
+
+        val outbound = buildJsonObject {
+            put("type", "socks")
+            put("tag", OUTBOUND_TAG)
+            put("server", host)
+            put("server_port", port)
+            put("version", version)
+            username?.let { put("username", it) }
+            if (version == "5") password?.let { put("password", it) }
+        }
+        return candidate(protocol, host, port, outbound, sourceId, uri.rawFragment)
     }
 
     /** null return means unsupported; JsonObject? inside Result semantics allows TCP/no transport. */

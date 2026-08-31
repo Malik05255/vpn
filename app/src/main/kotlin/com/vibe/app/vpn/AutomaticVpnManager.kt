@@ -37,7 +37,7 @@ class AutomaticVpnManager(context: Context) {
         val failures = mutableListOf<String>()
 
         if (candidates.isNotEmpty()) {
-            onProgress("تم العثور على ${candidates.size} مسارات مرشحة؛ جاري اختبار الأسرع والأصح…")
+            onProgress("تم العثور على ${candidates.size} مسارات حية مرشحة؛ جاري اختبار الأفضل فعلياً…")
         }
 
         candidates.forEachIndexed { index, candidate ->
@@ -51,7 +51,12 @@ class AutomaticVpnManager(context: Context) {
                 val configFile = writeRuntimeConfig(country, config)
                 SingBoxVpnService.start(appContext, configFile.absolutePath)
                 active = true
+
+                // The VPN service can be running before Android has fully switched the process route.
+                // Give the TUN a short initial settle period; ConnectionQualityClient then performs
+                // additional real-network warmup retries before it rejects the candidate.
                 delay(TUNNEL_SETTLE_MS)
+
                 val quality = qualityClient.verify(country)
                 AutomaticConnectionResult(
                     quality = quality,
@@ -64,7 +69,7 @@ class AutomaticVpnManager(context: Context) {
             }
 
             attempt.onSuccess { result ->
-                onProgress("تم اختيار أسرع مسار اجتاز فحص الدولة والسرعة والجودة.")
+                onProgress("تم اختيار مسار اجتاز فحص الدولة والسرعة والجودة.")
                 return@withContext result
             }.onFailure { error ->
                 failures += error.message.orEmpty().take(160)
@@ -77,7 +82,11 @@ class AutomaticVpnManager(context: Context) {
         val detail = failures.filter(String::isNotBlank).lastOrNull()
         throw IllegalStateException(
             buildString {
-                append("لا يوجد حالياً خادم مجاني حي في ${country.displayNameAr} يحقق معايير الدولة والسرعة والجودة المطلوبة.")
+                if (candidates.isEmpty()) {
+                    append("لم يتم العثور حالياً على أي مسار مجاني حي في ${country.displayNameAr} من المصادر المتاحة.")
+                } else {
+                    append("تم اختبار ${candidates.size} مسارات حية في ${country.displayNameAr}، لكن لم يجتز أي منها التحقق الكامل من الدولة والجودة.")
+                }
                 if (!detail.isNullOrBlank()) append(" آخر فحص: $detail")
             }
         )
@@ -110,8 +119,8 @@ class AutomaticVpnManager(context: Context) {
     }
 
     companion object {
-        private const val TUNNEL_SETTLE_MS = 900L
-        private const val BETWEEN_ATTEMPTS_MS = 250L
+        private const val TUNNEL_SETTLE_MS = 1_400L
+        private const val BETWEEN_ATTEMPTS_MS = 350L
         private const val MAX_CONFIG_BYTES = 512 * 1024
     }
 }
