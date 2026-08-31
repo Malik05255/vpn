@@ -15,6 +15,9 @@ fi
 adb logcat -c
 adb install -r "$APK"
 
+# Keep unrelated emulator launcher/system ANRs from covering the app under test.
+adb shell settings put global hide_error_dialogs 1 || true
+
 # Avoid permission sheets masking the updater UI. REQUEST_INSTALL_PACKAGES is still exercised by
 # the app; the emulator app-op simply represents the user having enabled "Allow from this source".
 adb shell pm grant "$PACKAGE" android.permission.POST_NOTIFICATIONS || true
@@ -22,8 +25,7 @@ adb shell appops set "$PACKAGE" REQUEST_INSTALL_PACKAGES allow || true
 adb shell am force-stop "$PACKAGE" || true
 adb shell am start -W -n "$PACKAGE/$ACTIVITY"
 
-# Give the real GitHub update endpoint enough time on the emulator network.
-sleep 15
+sleep 10
 
 if ! adb shell pidof "$PACKAGE" >/dev/null 2>&1; then
   echo "Arab VPN process died while checking for an update" >&2
@@ -31,12 +33,52 @@ if ! adb shell pidof "$PACKAGE" >/dev/null 2>&1; then
   exit 1
 fi
 
-adb shell uiautomator dump /sdcard/arabvpn-update-window.xml >/dev/null
-adb pull /sdcard/arabvpn-update-window.xml "$UI_DUMP" >/dev/null
+# Wait for the real update dialog. AOSP emulator images occasionally show a transient Quickstep
+# ANR over the foreground app during cold boot; dismiss that system overlay rather than treating it
+# as an Arab VPN failure.
+UPDATE_DIALOG_VISIBLE=0
+for _ in $(seq 1 25); do
+  adb shell uiautomator dump /sdcard/arabvpn-update-window.xml >/dev/null 2>&1 || true
+  adb pull /sdcard/arabvpn-update-window.xml "$UI_DUMP" >/dev/null 2>&1 || true
 
-if ! grep -Fq "تحديث جديد" "$UI_DUMP" || ! grep -Fq "تحديث الآن" "$UI_DUMP"; then
+  if [[ -f "$UI_DUMP" ]] && \
+     grep -Fq "تحديث جديد" "$UI_DUMP" && \
+     grep -Fq "تحديث الآن" "$UI_DUMP"; then
+    UPDATE_DIALOG_VISIBLE=1
+    break
+  fi
+
+  if [[ -f "$UI_DUMP" ]] && grep -Fq 'resource-id="android:id/aerr_wait"' "$UI_DUMP"; then
+    read -r WAIT_X WAIT_Y < <(
+      python3 - "$UI_DUMP" <<'PY'
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+root = ET.parse(sys.argv[1]).getroot()
+for node in root.iter("node"):
+    if node.attrib.get("resource-id") == "android:id/aerr_wait":
+        match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.attrib.get("bounds", ""))
+        if match:
+            x1, y1, x2, y2 = map(int, match.groups())
+            print((x1 + x2) // 2, (y1 + y2) // 2)
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+    ) || true
+    if [[ -n "${WAIT_X:-}" && -n "${WAIT_Y:-}" ]]; then
+      adb shell input tap "$WAIT_X" "$WAIT_Y" || true
+    else
+      adb shell input keyevent BACK || true
+    fi
+  fi
+
+  sleep 1
+done
+
+if [[ "$UPDATE_DIALOG_VISIBLE" -ne 1 ]]; then
   echo "Expected in-app update dialog was not visible" >&2
-  cat "$UI_DUMP" >&2
+  cat "$UI_DUMP" >&2 || true
   adb logcat -d -v threadtime | tail -500 >&2
   exit 1
 fi
@@ -82,7 +124,6 @@ for _ in $(seq 1 90); do
     break
   fi
 
-  # Fail early if Arab VPN crashes while downloading/verifying/handover is running.
   if adb logcat -d -v brief | grep -qE "FATAL EXCEPTION|Process: ${PACKAGE}"; then
     echo "Arab VPN crashed during update install handoff" >&2
     adb logcat -d -v threadtime | tail -1000 >&2
