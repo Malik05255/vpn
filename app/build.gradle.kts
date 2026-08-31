@@ -46,8 +46,9 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true
     }
     buildFeatures {
         compose = true
@@ -66,6 +67,7 @@ android {
             excludes += "META-INF/INDEX.LIST"
             excludes += "META-INF/io.netty.versions.properties"
             excludes += "META-INF/eclipse.inf"
+            excludes += "META-INF/native-image/**"
             excludes += "kotlin/kotlin.kotlin_builtins"
             excludes += "kotlin/ranges/ranges.kotlin_builtins"
             excludes += "kotlin/reflect/reflect.kotlin_builtins"
@@ -162,10 +164,12 @@ dependencies {
     // HTML parsing (web search)
     implementation(libs.jsoup)
 
-    // WireGuard userspace VPN backend. 20230706 avoids Java-record desugaring that is
-    // incompatible with this project's current D8 pipeline while retaining Android 10 support.
-    // Country server credentials are imported at runtime and never committed to the repository.
+    // WireGuard userspace VPN backend. Country server credentials are imported at runtime
+    // and never committed to the repository.
     implementation("com.wireguard.android:tunnel:1.0.20230706")
+
+    // Required for Java 17 libraries that use records/default library APIs while targeting Android 10+.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
     // Hidden API bypass — lets plugin inspector reflect WindowManagerGlobal.getRootViews()
     // so that dialogs / popup menus / bottom sheets are visible to the agent on API 30+.
