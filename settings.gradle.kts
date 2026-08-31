@@ -38,6 +38,10 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "ArabVPN"
+include(":arabvpn")
+
+// Legacy modules remain in the repository for history/reference, but Arab VPN CI/release builds
+// only :arabvpn. This prevents the VibeApp agent/builder stack from entering the Arab VPN APK.
 include(":app")
 include(":build-engine")
 include(":build-tools:android-common-resources")
