@@ -1,6 +1,9 @@
-package com.vibe.app.presentation.ui.main
+package com.arabvpn.app
 
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -12,20 +15,23 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.vibe.app.vpn.VpnScreen
 import com.vibe.app.vpn.VpnViewModel
-import dagger.hilt.android.AndroidEntryPoint
 
-@AndroidEntryPoint
+/**
+ * Arab VPN launcher activity. It is intentionally independent of VibeApp/Hilt so the two
+ * applications have separate process identity, storage, permissions, notifications and updates.
+ */
 class MainActivity : ComponentActivity() {
     private val vpnViewModel: VpnViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
-        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
 
         setContent {
             val state = vpnViewModel.uiState.collectAsStateWithLifecycle().value
@@ -41,6 +47,22 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val notificationPermissionLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.RequestPermission(),
+            ) { /* Update checks continue even if notifications are declined. */ }
+
+            if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                androidx.compose.runtime.LaunchedEffect(Unit) {
+                    runCatching {
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+            }
+
             MaterialTheme(
                 colorScheme = if (darkTheme) darkColorScheme() else lightColorScheme(),
             ) {
@@ -48,11 +70,15 @@ class MainActivity : ComponentActivity() {
                     state = state,
                     onCountrySelected = vpnViewModel::selectCountry,
                     onConnect = {
-                        val permissionIntent = vpnViewModel.prepareVpnPermission()
-                        if (permissionIntent == null) {
-                            vpnViewModel.connectAuthorized()
-                        } else {
-                            vpnPermissionLauncher.launch(permissionIntent)
+                        runCatching {
+                            val permissionIntent = vpnViewModel.prepareVpnPermission()
+                            if (permissionIntent == null) {
+                                vpnViewModel.connectAuthorized()
+                            } else {
+                                vpnPermissionLauncher.launch(permissionIntent)
+                            }
+                        }.onFailure {
+                            vpnViewModel.onConnectionLaunchFailure(it)
                         }
                     },
                     onDisconnect = vpnViewModel::disconnect,
@@ -66,6 +92,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        vpnViewModel.retryLocationSyncIfNeeded()
+        runCatching { vpnViewModel.retryLocationSyncIfNeeded() }
     }
 }

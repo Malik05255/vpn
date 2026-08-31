@@ -15,18 +15,20 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.vibe.app"
+        // Arab VPN is a completely separate Android application from VibeApp.
+        // Keeping a distinct applicationId allows both apps to be installed side-by-side.
+        applicationId = "com.malik05255.arabvpn"
         minSdk = 29
         targetSdk = 36
-        versionCode = 15
-        versionName = "1.9.0"
+        versionCode = 1
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi")
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
     }
 
@@ -46,8 +48,9 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true
     }
     buildFeatures {
         compose = true
@@ -56,9 +59,7 @@ android {
     }
     packaging {
         jniLibs {
-            // Must stay true: libaapt2.so is executed as a binary via ProcessBuilder,
-            // not loaded as a shared library. With false, Android 10+ does not extract
-            // .so to nativeLibraryDir and the fallback files/ dir has noexec mount.
+            // Native VPN/build-engine libraries must be extracted on Android 10+.
             useLegacyPackaging = true
         }
         resources {
@@ -66,6 +67,7 @@ android {
             excludes += "META-INF/INDEX.LIST"
             excludes += "META-INF/io.netty.versions.properties"
             excludes += "META-INF/eclipse.inf"
+            excludes += "META-INF/native-image/**"
             excludes += "kotlin/kotlin.kotlin_builtins"
             excludes += "kotlin/ranges/ranges.kotlin_builtins"
             excludes += "kotlin/reflect/reflect.kotlin_builtins"
@@ -76,19 +78,16 @@ android {
             excludes += "about_files/LICENSE-2.0.txt"
             excludes += "plugin.xml"
             excludes += "plugin.properties"
-            // Javac compiler localized messages (not visible to users)
             excludes += "com/sun/tools/javac/resources/compiler_ja.properties"
             excludes += "com/sun/tools/javac/resources/compiler_zh_CN.properties"
             excludes += "com/sun/tools/javac/resources/javac_ja.properties"
             excludes += "com/sun/tools/javac/resources/javac_zh_CN.properties"
             excludes += "com/sun/tools/javac/resources/launcher_ja.properties"
             excludes += "com/sun/tools/javac/resources/launcher_zh_CN.properties"
-            // Javap / doclint localized messages (unused)
             excludes += "com/sun/tools/javap/resources/javap_ja.properties"
             excludes += "com/sun/tools/javap/resources/javap_zh_CN.properties"
             excludes += "com/sun/tools/doclint/resources/doclint_ja.properties"
             excludes += "com/sun/tools/doclint/resources/doclint_zh_CN.properties"
-            // JAXP/Xerces localized messages
             excludes += "org/openjdk/com/sun/org/apache/xerces/internal/impl/msg/*_*.properties"
             excludes += "org/openjdk/com/sun/org/apache/xml/internal/serializer/output_*.properties"
         }
@@ -161,6 +160,21 @@ dependencies {
 
     // HTML parsing (web search)
     implementation(libs.jsoup)
+
+    // Update engine: WorkManager checks periodically; bsdiff reconstructs the new APK from
+    // the installed APK plus the small binary difference when a delta is available.
+    implementation("androidx.work:work-runtime-ktx:2.10.1")
+    implementation("com.tencent.tinker:bsdiff-util:1.9.15.2")
+
+    // WireGuard remains available as a private/manual fallback.
+    implementation("com.wireguard.android:tunnel:1.0.20230706")
+
+    // sing-box Android core adds Trojan/VLESS/VMess/Shadowsocks support so the automatic
+    // free-node pool is not artificially limited to WireGuard-only endpoints.
+    implementation("com.github.asterisk4magisk:libbox:v1.14.0-rc.4-reF1nd@aar")
+
+    // Required for Java 17 libraries that use records/default library APIs while targeting Android 10+.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
     // Hidden API bypass — lets plugin inspector reflect WindowManagerGlobal.getRootViews()
     // so that dialogs / popup menus / bottom sheets are visible to the agent on API 30+.

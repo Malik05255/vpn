@@ -1,15 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-
-    <!-- Legacy styles are retained only for source compatibility with old VibeApp classes. -->
-    <style name="Theme.VibeApp" parent="android:Theme.Material.NoActionBar" />
-    <style name="Theme.VibeApp.Starting" parent="Theme.SplashScreen.IconBackground">
-        <item name="windowSplashScreenBackground">@color/ic_vibe_app_background</item>
-        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_icon_inset</item>
-        <item name="windowSplashScreenIconBackgroundColor">@color/ic_vibe_app_background</item>
-        <item name="postSplashScreenTheme">@style/Theme.VibeApp</item>
-    </style>
-
     <style name="Theme.ArabVPN" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:navigationBarColor">#101828</item>
@@ -29,5 +19,4 @@
         <item name="android:colorAccent">#12B76A</item>
         <item name="android:windowNoTitle">true</item>
     </style>
-
 </resources>

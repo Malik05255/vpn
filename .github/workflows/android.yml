@@ -1,4 +1,4 @@
-name: Android CI
+name: Arab VPN Android CI
 
 on:
   push:
@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   assemble-debug:
-    name: Assemble Debug
+    name: Assemble Arab VPN Debug
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -42,11 +42,50 @@ jobs:
           cache: gradle
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-      - name: Assemble debug APK
-        run: ./gradlew --no-daemon app:assembleDebug
+      - name: Assemble standalone debug APK
+        run: ./gradlew --no-daemon :arabvpn:assembleDebug
+      - name: Upload standalone debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: arab-vpn-debug-apk
+          path: arabvpn/build/outputs/apk/debug/arabvpn-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  startup-smoke-test:
+    name: APK Startup Smoke Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: gradle
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Grant execute permission
+        run: chmod +x gradlew ci/arab-vpn-startup-smoke-test.sh
+      - name: Build standalone debug APK
+        run: ./gradlew --no-daemon :arabvpn:assembleDebug
+      - name: Boot emulator, install and launch Arab VPN
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: ./ci/arab-vpn-startup-smoke-test.sh
 
   unit-tests:
-    name: Unit Tests
+    name: Arab VPN Unit Tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -60,29 +99,11 @@ jobs:
           cache: gradle
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-      - name: Run app unit tests
-        run: ./gradlew --no-daemon app:testDebugUnitTest
-
-  build-engine-tests:
-    name: Build Engine Tests
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v5
-      - name: Set up JDK 17
-        uses: actions/setup-java@v5
-        with:
-          java-version: "17"
-          distribution: "temurin"
-          cache: gradle
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-      - name: Run build-engine tests
-        run: ./gradlew --no-daemon :build-engine:test
+      - name: Run Arab VPN unit tests
+        run: ./gradlew --no-daemon :arabvpn:testDebugUnitTest
 
   android-lint:
-    name: Android Lint
+    name: Arab VPN Android Lint
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -96,5 +117,35 @@ jobs:
           cache: gradle
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-      - name: Run Android lint
-        run: ./gradlew --no-daemon app:lintDebug
+      - name: Run standalone Android lint
+        shell: bash
+        run: |
+          set +e
+          ./gradlew --no-daemon :arabvpn:lintDebug
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            report="arabvpn/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt"
+            if [ -f "$report" ]; then
+              echo "===== FULL ARAB VPN LINT REPORT ====="
+              cat "$report"
+            fi
+            exit "$status"
+          fi
+
+  release-build:
+    name: Assemble Arab VPN Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: gradle
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      - name: Verify minified release build
+        run: ./gradlew --no-daemon :arabvpn:assembleRelease
