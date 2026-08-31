@@ -5,6 +5,7 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import com.tencent.tinker.bsdiff.BSPatch
 import com.vibe.app.BuildConfig
 import kotlinx.coroutines.Dispatchers
@@ -25,7 +26,10 @@ class UpdateDownloadWorker(
             val manifest = client.fetchLatestManifest()
                 ?: client.cachedManifest()
                 ?: error("لا يوجد إصدار Arab VPN منشور حالياً")
-            if (manifest.versionCode <= BuildConfig.VERSION_CODE) return@runCatching
+
+            if (manifest.versionCode <= BuildConfig.VERSION_CODE) {
+                return@runCatching workDataOf(KEY_ALREADY_CURRENT to true)
+            }
 
             val updateDir = File(applicationContext.cacheDir, "updates").apply {
                 deleteRecursively()
@@ -58,14 +62,18 @@ class UpdateDownloadWorker(
             }
 
             UpdateNotifications.showReady(applicationContext, candidate, manifest, usedDelta)
+            workDataOf(
+                KEY_APK_PATH to candidate.absolutePath,
+                KEY_VERSION_CODE to manifest.versionCode,
+                KEY_VERSION_NAME to manifest.versionName,
+                KEY_USED_DELTA to usedDelta,
+            )
         }.fold(
-            onSuccess = { Result.success() },
+            onSuccess = { output -> Result.success(output) },
             onFailure = { error ->
-                UpdateNotifications.showFailure(
-                    applicationContext,
-                    error.message ?: "تعذر تجهيز التحديث",
-                )
-                Result.failure()
+                val message = error.message ?: "تعذر تجهيز التحديث"
+                UpdateNotifications.showFailure(applicationContext, message)
+                Result.failure(workDataOf(KEY_ERROR_MESSAGE to message))
             },
         )
     }
@@ -131,5 +139,14 @@ class UpdateDownloadWorker(
             digest.reset()
             digest.digest(certificate.toByteArray()).joinToString("") { "%02x".format(it) }
         }
+    }
+
+    companion object {
+        const val KEY_APK_PATH = "apk_path"
+        const val KEY_VERSION_CODE = "version_code"
+        const val KEY_VERSION_NAME = "version_name"
+        const val KEY_USED_DELTA = "used_delta"
+        const val KEY_ALREADY_CURRENT = "already_current"
+        const val KEY_ERROR_MESSAGE = "error_message"
     }
 }

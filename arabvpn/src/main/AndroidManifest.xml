@@ -35,7 +35,7 @@
             android:name="com.arabvpn.app.update.UpdateInstallActivity"
             android:excludeFromRecents="true"
             android:exported="false"
-            android:theme="@style/Theme.ArabVPN.Transparent" />
+            android:theme="@style/Theme.ArabVPN" />
 
         <receiver
             android:name="com.arabvpn.app.update.UpdateDownloadReceiver"

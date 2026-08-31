@@ -5,7 +5,6 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -29,7 +28,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.arabvpn.app.update.GitHubUpdateClient
-import com.arabvpn.app.update.UpdateDownloadReceiver
+import com.arabvpn.app.update.UpdateInstallActivity
 import com.arabvpn.app.update.UpdateManifest
 import com.arabvpn.app.update.UpdateNotifications
 import com.vibe.app.BuildConfig
@@ -95,7 +94,6 @@ private val ArabVpnDarkColors = darkColorScheme(
 class MainActivity : ComponentActivity() {
     private val vpnViewModel: VpnViewModel by viewModels()
 
-    // Incremented on every resume so the visible updater does not depend on Activity recreation.
     private val updateCheckGeneration = MutableStateFlow(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -109,8 +107,6 @@ class MainActivity : ComponentActivity() {
             val darkTheme = isSystemInDarkTheme()
             val updateClient = remember { GitHubUpdateClient(this@MainActivity) }
 
-            // Cached discovery renders synchronously. If the background worker already saw a new
-            // release, the dialog is present on the first composed frame instead of waiting on GitHub.
             val cachedUpdate = remember {
                 updateClient.cachedManifest()
                     ?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }
@@ -118,8 +114,6 @@ class MainActivity : ComponentActivity() {
             var availableUpdate by remember { mutableStateOf<UpdateManifest?>(cachedUpdate) }
             var dismissedUpdateVersion by remember { mutableStateOf<Int?>(null) }
 
-            // Refresh on every return. The fast path is a single fixed-manifest request; network
-            // errors never erase a valid cached update that is already visible to the user.
             LaunchedEffect(checkGeneration) {
                 val freshUpdate = runCatching {
                     withContext(Dispatchers.IO) {
@@ -149,8 +143,6 @@ class MainActivity : ComponentActivity() {
             val notificationPermissionLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.RequestPermission(),
             ) { granted ->
-                // The first update check can finish while Android's permission sheet is still open.
-                // Re-check immediately after approval so the notification is not lost for this launch.
                 if (granted) {
                     updateCheckGeneration.value = updateCheckGeneration.value + 1
                 }
@@ -202,20 +194,17 @@ class MainActivity : ComponentActivity() {
                         title = { Text("⬆ تحديث جديد لـ Arab VPN") },
                         text = {
                             Text(
-                                "الإصدار ${update.versionName} متاح الآن. اضغط «تحديث الآن» للبدء مباشرة. إذا توفر ملف فرق أصغر سيستخدمه التطبيق تلقائياً."
+                                "الإصدار ${update.versionName} متاح الآن. عند الضغط على «تحديث الآن» سيُنزل التطبيق الملف ويتحقق منه ثم يفتح مثبت Android تلقائياً."
                             )
                         },
                         confirmButton = {
                             TextButton(
                                 onClick = {
                                     dismissedUpdateVersion = update.versionCode
-                                    UpdateDownloadReceiver.enqueue(this@MainActivity)
                                     availableUpdate = null
-                                    Toast.makeText(
-                                        this@MainActivity,
-                                        "بدأ تنزيل التحديث",
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
+                                    startActivity(
+                                        UpdateInstallActivity.downloadAndInstallIntent(this@MainActivity)
+                                    )
                                 }
                             ) {
                                 Text("تحديث الآن")
