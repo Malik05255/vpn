@@ -4,28 +4,53 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
-        android:name="com.vibe.app.presentation.VibeApp"
+        android:name="com.arabvpn.app.ArabVpnApplication"
         android:allowBackup="false"
         android:enableOnBackInvokedCallback="true"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@drawable/ic_arab_vpn"
+        android:roundIcon="@drawable/ic_arab_vpn"
         android:label="@string/arab_vpn_app_name"
         android:supportsRtl="true"
+        android:theme="@style/Theme.ArabVPN"
         android:usesCleartextTraffic="false">
 
         <activity
-            android:name="com.vibe.app.presentation.ui.main.MainActivity"
+            android:name="com.arabvpn.app.MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:theme="@style/Theme.VibeApp.Starting">
+            android:theme="@style/Theme.ArabVPN.Starting">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name="com.arabvpn.app.update.UpdateInstallActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:theme="@style/Theme.ArabVPN.Transparent" />
+
+        <receiver
+            android:name="com.arabvpn.app.update.UpdateDownloadReceiver"
+            android:exported="false" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <service
             android:name="com.vibe.app.vpn.SingBoxVpnService"
