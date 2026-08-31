@@ -42,7 +42,7 @@ class ProxyFallbackParserTest {
         val candidate = requireNotNull(
             ProxyShareParser.parse(
                 "hysteria2://secret@example.com:443?sni=cdn.example.com&insecure=1&obfs=salamander&obfs-password=mask#hy2",
-                sourceId = "argh73-country",
+                sourceId = "parser-test",
             )
         )
 
@@ -59,7 +59,7 @@ class ProxyFallbackParserTest {
         val candidate = requireNotNull(
             ProxyShareParser.parse(
                 "tuic://550e8400-e29b-41d4-a716-446655440000:secret@example.com:443?sni=cdn.example.com&congestion_control=bbr&udp_relay_mode=native#tuic",
-                sourceId = "country-feed",
+                sourceId = "parser-test",
             )
         )
 
@@ -76,7 +76,7 @@ class ProxyFallbackParserTest {
         val candidate = requireNotNull(
             ProxyShareParser.parse(
                 "vless://7483fa54-0bbe-4382-ba8c-b445349962bf@91.228.227.112:110?security=none&encryption=none&headerType=none&type=tcp#tcp",
-                sourceId = "country-feed",
+                sourceId = "parser-test",
             )
         )
 
@@ -89,7 +89,7 @@ class ProxyFallbackParserTest {
         val candidate = requireNotNull(
             ProxyShareParser.parse(
                 "vless://4bf5a71c-d726-4585-b095-7396675706d5@72.56.81.165:40443?security=reality&amp;encryption=none&amp;pbk=D_ks4Yyk4-osnWBxCFvd0_UEgohUXvR2zJoWQg1CACU&amp;headerType=none&amp;fp=chrome&amp;type=tcp&amp;flow=xtls-rprx-vision&amp;sni=deepl.com&amp;sid=c84f#reality",
-                sourceId = "argh73-country",
+                sourceId = "parser-test",
             )
         )
 
@@ -108,11 +108,11 @@ class ProxyFallbackParserTest {
                 "http://41.65.103.190:8080",
                 sourceId = "proxifly-country",
             )
-        ).copy(countryEvidence = CountryEvidence.LIVE_COUNTRY_API)
+        ).copy(countryEvidence = CountryEvidence.ENDPOINT_GEO_VERIFIED)
 
         val config = SingBoxConfigBuilder.build(candidate)
 
-        assertEquals(CountryEvidence.LIVE_COUNTRY_API, candidate.countryEvidence)
+        assertEquals(CountryEvidence.ENDPOINT_GEO_VERIFIED, candidate.countryEvidence)
         assertTrue(config.contains("\"type\":\"tun\""))
         assertTrue(config.contains("\"type\":\"http\""))
         assertTrue(config.contains("\"final\":\"country-proxy\""))
