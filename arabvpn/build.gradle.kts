@@ -16,15 +16,22 @@ android {
         versionName = "1.0.0"
 
         vectorDrawables.useSupportLibrary = true
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
-        }
     }
 
     buildTypes {
+        debug {
+            // x86_64 exists only to allow real emulator startup tests in CI.
+            // Phone/release builds stay ARM-only for size and efficiency.
+            ndk {
+                abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            }
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            ndk {
+                abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -43,23 +50,6 @@ android {
         buildConfig = true
     }
 
-    sourceSets {
-        getByName("main") {
-            java.setSrcDirs(
-                listOf(
-                    "../app/src/main/kotlin/com/arabvpn/app",
-                    "../app/src/main/kotlin/com/vibe/app/vpn",
-                )
-            )
-        }
-        getByName("test") {
-            java.setSrcDirs(listOf("src/test/kotlin"))
-        }
-        getByName("androidTest") {
-            java.setSrcDirs(emptyList<String>())
-        }
-    }
-
     packaging {
         jniLibs.useLegacyPackaging = true
         resources {
@@ -72,6 +62,23 @@ android {
     lint {
         abortOnError = true
         checkReleaseBuilds = true
+    }
+}
+
+// The standalone module intentionally reuses only the Arab VPN source directories from the old
+// repository layout. Configure Kotlin's source sets directly; Android's java.srcDirs alone does
+// not register .kt files with the Kotlin compiler on the current Gradle/Kotlin plugin versions.
+kotlin {
+    sourceSets {
+        getByName("main") {
+            kotlin.srcDirs(
+                "../app/src/main/kotlin/com/arabvpn/app",
+                "../app/src/main/kotlin/com/vibe/app/vpn",
+            )
+        }
+        getByName("test") {
+            kotlin.srcDir("src/test/kotlin")
+        }
     }
 }
 
