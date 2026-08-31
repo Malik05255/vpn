@@ -50,6 +50,16 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun onConnectionLaunchFailure(error: Throwable) {
+        _uiState.update {
+            it.copy(
+                connectionStatus = ConnectionStatus.DISCONNECTED,
+                noticeMessage = null,
+                errorMessage = error.message ?: "تعذر بدء خدمة VPN على هذا الجهاز.",
+            )
+        }
+    }
+
     fun connectAuthorized() {
         val country = _uiState.value.selectedCountry ?: return
         if (_uiState.value.connectionStatus != ConnectionStatus.DISCONNECTED) return
