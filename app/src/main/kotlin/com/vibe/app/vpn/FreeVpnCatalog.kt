@@ -7,6 +7,12 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.net.HttpURLConnection
@@ -18,29 +24,33 @@ import java.nio.charset.StandardCharsets
 import kotlin.math.min
 
 /**
- * Discovers free public relays, but never trusts a filename/remark as proof of the exit country.
+ * Strict free-relay discovery.
  *
- * Live provider APIs are preferred. Community country files are treated only as hints and their
- * endpoints are geolocated before they may enter the expensive full-device tunnel stage.
- * The final tunnel must still prove the selected exit country after it is running.
+ * A source saying that an endpoint belongs to a country is never enough. Every candidate must:
+ * 1) parse into a supported, public endpoint,
+ * 2) pass a protocol-level reachability check,
+ * 3) pass independent endpoint geolocation checks for the requested country,
+ * 4) then (outside this class) prove the real tunnel exit country after sing-box starts.
+ *
+ * Community V2Ray files previously labelled by country are intentionally excluded because real
+ * device testing showed that those files can contain endpoints from unrelated countries and even
+ * loopback addresses.
  */
 class FreeVpnCatalog {
     suspend fun discover(country: VpnCountry): List<FreeVpnCandidate> = withContext(Dispatchers.IO) {
-        val sources = sourcesFor(country)
-
         val sourceCandidates = coroutineScope {
-            sources.map { source ->
+            sourcesFor(country).map { source ->
                 async(Dispatchers.IO) {
-                    runCatching { fetch(source.url) }
-                        .getOrNull()
-                        .orEmpty()
-                        .lineSequence()
+                    val body = runCatching { fetch(source.url) }.getOrNull().orEmpty()
+                    source.shareLines(body)
                         .map(String::trim)
                         .filter { line -> line.isNotEmpty() && !line.startsWith('#') }
-                        .map { line -> source.normalize(line) }
+                        .map(source::normalize)
                         .mapNotNull { line -> ProxyShareParser.parse(line, source.id) }
                         .filter { candidate -> candidate.isSafePublicEndpoint() }
-                        .map { candidate -> candidate.copy(countryEvidence = source.countryEvidence) }
+                        .map { candidate ->
+                            candidate.copy(countryEvidence = CountryEvidence.SOURCE_COUNTRY_CLAIM)
+                        }
                         .distinctBy { candidate -> candidate.fingerprint }
                         .take(MAX_PER_SOURCE)
                         .toList()
@@ -52,43 +62,39 @@ class FreeVpnCatalog {
             .distinctBy { candidate -> candidate.fingerprint }
             .take(MAX_PREFLIGHT_CANDIDATES)
 
-        val geoBudget = Semaphore(MAX_GEO_CONCURRENCY)
-        val geoChecked = coroutineScope {
-            var labelBudgetUsed = 0
+        // Dead public proxies are far more common than live ones. Check the actual proxy protocol
+        // first so scarce geolocation requests are only spent on endpoints that can carry traffic.
+        val preflightBudget = Semaphore(MAX_PREFLIGHT_CONCURRENCY)
+        val live = coroutineScope {
             raw.map { candidate ->
-                val shouldGeoCheck = candidate.countryEvidence == CountryEvidence.LABEL_ONLY &&
-                    labelBudgetUsed++ < MAX_LABEL_GEO_CANDIDATES
-                if (!shouldGeoCheck) {
-                    async(Dispatchers.IO) {
-                        if (candidate.countryEvidence == CountryEvidence.LABEL_ONLY) null else candidate
+                async(Dispatchers.IO) {
+                    preflightBudget.withPermit {
+                        candidate.copy(preflightLatencyMs = protocolPreflight(candidate))
                     }
-                } else {
-                    async(Dispatchers.IO) {
-                        geoBudget.withPermit {
-                            candidate.takeIf { endpointCountryMatches(it, country) }
-                                ?.copy(countryEvidence = CountryEvidence.ENDPOINT_GEO_VERIFIED)
-                        }
+                }
+            }.awaitAll()
+                .filter { it.preflightLatencyMs != null }
+                .sortedBy { it.preflightLatencyMs ?: Long.MAX_VALUE }
+                .take(MAX_GEO_CANDIDATES)
+        }
+
+        // Every endpoint is geolocated even when the upstream API already claimed a country.
+        // Conflicting geo providers cause a hard rejection rather than a guessed connection.
+        val geoBudget = Semaphore(MAX_GEO_CONCURRENCY)
+        val geoVerified = coroutineScope {
+            live.map { candidate ->
+                async(Dispatchers.IO) {
+                    geoBudget.withPermit {
+                        candidate.takeIf { endpointCountryMatchesStrict(it, country) }
+                            ?.copy(countryEvidence = CountryEvidence.ENDPOINT_GEO_VERIFIED)
                     }
                 }
             }.awaitAll().filterNotNull()
         }
 
-        val limiter = Semaphore(MAX_PREFLIGHT_CONCURRENCY)
-        val preflighted = coroutineScope {
-            geoChecked.map { candidate ->
-                async(Dispatchers.IO) {
-                    limiter.withPermit {
-                        candidate.copy(preflightLatencyMs = protocolPreflight(candidate))
-                    }
-                }
-            }.awaitAll()
-        }
-
-        preflighted
-            .filter { it.preflightLatencyMs != null }
+        geoVerified
             .sortedWith(
-                compareBy<FreeVpnCandidate> { evidencePriority(it.countryEvidence) }
-                    .thenBy { protocolPriority(it.protocol) }
+                compareBy<FreeVpnCandidate> { protocolPriority(it.protocol) }
                     .thenBy { it.preflightLatencyMs ?: Long.MAX_VALUE }
             )
             .take(MAX_CONNECT_ATTEMPTS)
@@ -97,65 +103,60 @@ class FreeVpnCatalog {
     private fun sourcesFor(country: VpnCountry): List<CatalogSource> {
         val upperCode = country.code.uppercase()
         val lowerCode = country.code.lowercase()
-        val countryName = country.displayNameEn
         val hproxyBase = "https://hproxy.com/api/proxy-list?format=txt&country=$upperCode&limit=100"
+        val proxyScrapeBase =
+            "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies" +
+                "&proxy_format=protocolipport&format=text&country=$lowerCode&timeout=10000"
 
         return listOf(
-            // HProxy checks the free pool continuously. Its TXT format is ip:port, so each request
-            // is protocol-specific and normalized to a standard share URI before parsing.
+            // Public endpoint documented by Socks5Proxies.com. It is best-effort/rate-limited,
+            // therefore it is one source among several and never bypasses local validation.
             CatalogSource(
-                id = "hproxy-http-live",
-                url = "$hproxyBase&protocol=http",
-                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
+                id = "socks5proxies-live-country",
+                url = "https://api.socks5proxies.com/api/proxies?country=$upperCode&limit=100",
+                format = SourceFormat.SOCKS5PROXIES_JSON,
+            ),
+            CatalogSource(
+                id = "proxyscrape-http-live",
+                url = "$proxyScrapeBase&protocol=http",
                 linePrefix = "http://",
             ),
             CatalogSource(
-                id = "hproxy-https-live",
-                url = "$hproxyBase&protocol=https",
-                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
-                linePrefix = "https://",
+                id = "proxyscrape-socks5-live",
+                url = "$proxyScrapeBase&protocol=socks5",
+                linePrefix = "socks5://",
+            ),
+            CatalogSource(
+                id = "proxyscrape-socks4-live",
+                url = "$proxyScrapeBase&protocol=socks4",
+                linePrefix = "socks4://",
+            ),
+            CatalogSource(
+                id = "proxyscrape-country-mirror",
+                url = "https://raw.githubusercontent.com/ProxyScrape/free-proxy-list/main/proxies/countries/$lowerCode/data.txt",
+            ),
+            CatalogSource(
+                id = "webunblocker-country-snapshot",
+                url = "https://raw.githubusercontent.com/webunblocker/free-proxy-list/main/proxies/countries/$upperCode/data.txt",
+            ),
+            CatalogSource(
+                id = "hproxy-http-live",
+                url = "$hproxyBase&protocol=http",
+                linePrefix = "http://",
             ),
             CatalogSource(
                 id = "hproxy-socks5-live",
                 url = "$hproxyBase&protocol=socks5",
-                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
                 linePrefix = "socks5://",
             ),
             CatalogSource(
                 id = "hproxy-socks4-live",
                 url = "$hproxyBase&protocol=socks4",
-                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
                 linePrefix = "socks4://",
-            ),
-            CatalogSource(
-                id = "proxyscrape-live-country",
-                url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&proxy_format=protocolipport&format=text&country=$lowerCode&timeout=10000",
-                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
-            ),
-            CatalogSource(
-                id = "proxyscrape-country-mirror",
-                url = "https://raw.githubusercontent.com/ProxyScrape/free-proxy-list/main/proxies/countries/$lowerCode/data.txt",
-                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
-            ),
-            CatalogSource(
-                id = "argh73-country",
-                url = "https://raw.githubusercontent.com/Argh73/VpnConfigCollector/refs/heads/main/Splitted-By-Country/$countryName.txt",
-                countryEvidence = CountryEvidence.LABEL_ONLY,
-            ),
-            CatalogSource(
-                id = "argh94-country",
-                url = "https://raw.githubusercontent.com/Argh94/V2RayAutoConfig/main/configs/$countryName.txt",
-                countryEvidence = CountryEvidence.LABEL_ONLY,
-            ),
-            CatalogSource(
-                id = "collector-country",
-                url = "https://raw.githubusercontent.com/217CnoC/configs-collector-v2ray/main/sub/countries/$upperCode.txt",
-                countryEvidence = CountryEvidence.LABEL_ONLY,
             ),
             CatalogSource(
                 id = "proxifly-country",
                 url = "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/countries/$upperCode/data.txt",
-                countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
             ),
         )
     }
@@ -167,8 +168,8 @@ class FreeVpnCatalog {
             requestMethod = "GET"
             useCaches = false
             instanceFollowRedirects = true
-            setRequestProperty("Accept", "text/plain,application/json;q=0.8,*/*;q=0.2")
-            setRequestProperty("User-Agent", "ArabVPN/1.2 Android")
+            setRequestProperty("Accept", "application/json,text/plain,*/*;q=0.2")
+            setRequestProperty("User-Agent", "ArabVPN/1.3 Android")
         }
         return try {
             val code = connection.responseCode
@@ -193,23 +194,50 @@ class FreeVpnCatalog {
         }
     }
 
-    private fun endpointCountryMatches(candidate: FreeVpnCandidate, country: VpnCountry): Boolean {
-        val address = resolvePublicAddress(candidate.server) ?: return false
-        val connection = (URL("https://ipwho.is/${address.hostAddress}").openConnection() as HttpURLConnection).apply {
+    private suspend fun endpointCountryMatchesStrict(
+        candidate: FreeVpnCandidate,
+        country: VpnCountry,
+    ): Boolean = coroutineScope {
+        val address = resolvePublicAddress(candidate.server) ?: return@coroutineScope false
+        val ip = address.hostAddress ?: return@coroutineScope false
+
+        val ipWho = async(Dispatchers.IO) { lookupIpWhoCountry(ip) }
+        val countryIs = async(Dispatchers.IO) { lookupCountryIsCountry(ip) }
+
+        CountryVerificationPolicy.accept(
+            expected = country.code,
+            providerA = ipWho.await(),
+            providerB = countryIs.await(),
+        )
+    }
+
+    private fun lookupIpWhoCountry(ip: String): String? {
+        val body = fetchGeoJson("https://ipwho.is/$ip") ?: return null
+        return IPWHO_COUNTRY_CODE_REGEX.find(body)?.groupValues?.getOrNull(1)
+    }
+
+    private fun lookupCountryIsCountry(ip: String): String? {
+        val body = fetchGeoJson("https://api.country.is/$ip") ?: return null
+        return COUNTRY_IS_CODE_REGEX.find(body)?.groupValues?.getOrNull(1)
+    }
+
+    private fun fetchGeoJson(url: String): String? {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = GEO_TIMEOUT_MS
             readTimeout = GEO_TIMEOUT_MS
             requestMethod = "GET"
             useCaches = false
+            instanceFollowRedirects = true
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ArabVPN/1.2 Android")
+            setRequestProperty("User-Agent", "ArabVPN/1.3 Android")
         }
         return try {
-            if (connection.responseCode !in 200..299) return false
-            val body = connection.inputStream.bufferedReader().use { it.readText().take(MAX_GEO_RESPONSE_CHARS) }
-            val reported = COUNTRY_CODE_REGEX.find(body)?.groupValues?.getOrNull(1)
-            reported.equals(country.code, ignoreCase = true)
+            if (connection.responseCode !in 200..299) return null
+            connection.inputStream.bufferedReader().use {
+                it.readText().take(MAX_GEO_RESPONSE_CHARS)
+            }
         } catch (_: Throwable) {
-            false
+            null
         } finally {
             connection.disconnect()
         }
@@ -229,8 +257,6 @@ class FreeVpnCatalog {
         ProxyProtocol.HTTP -> httpConnectPreflight(candidate)
         ProxyProtocol.SOCKS5 -> socks5Preflight(candidate)
         ProxyProtocol.SOCKS4 -> socks4Preflight(candidate)
-        // QUIC/UDP nodes cannot be judged with a TCP-open probe. Real handshake validation happens
-        // in the isolated libbox runtime and is time-bounded by AutomaticVpnManager.
         ProxyProtocol.HYSTERIA2, ProxyProtocol.TUIC -> udpEndpointPreflight(candidate.server, candidate.port)
         else -> tcpPreflight(candidate.server, candidate.port)
     }
@@ -269,7 +295,8 @@ class FreeVpnCatalog {
                 val input = socket.getInputStream().bufferedReader(StandardCharsets.US_ASCII)
                 val status = input.readLine().orEmpty()
                 require(status.startsWith("HTTP/", ignoreCase = true))
-                val code = status.split(' ').getOrNull(1)?.toIntOrNull() ?: error("invalid HTTP proxy response")
+                val code = status.split(' ').getOrNull(1)?.toIntOrNull()
+                    ?: error("invalid HTTP proxy response")
                 require(code in 200..299) { "HTTP proxy rejected CONNECT" }
             }
             elapsedMs(started)
@@ -286,8 +313,16 @@ class FreeVpnCatalog {
                 val input = BufferedInputStream(socket.getInputStream())
                 output.write(byteArrayOf(0x05, 0x01, 0x00))
                 output.flush()
-                require(input.read() == 0x05 && input.read() == 0x00) { "SOCKS5 authentication unsupported" }
-                output.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0xBB.toByte()))
+                require(input.read() == 0x05 && input.read() == 0x00) {
+                    "SOCKS5 authentication unsupported"
+                }
+                output.write(
+                    byteArrayOf(
+                        0x05, 0x01, 0x00, 0x01,
+                        0x01, 0x01, 0x01, 0x01,
+                        0x01, 0xBB.toByte(),
+                    )
+                )
                 output.flush()
                 require(input.read() == 0x05 && input.read() == 0x00) { "SOCKS5 CONNECT failed" }
             }
@@ -303,9 +338,16 @@ class FreeVpnCatalog {
                 socket.connect(InetSocketAddress(candidate.server, candidate.port), PREFLIGHT_TIMEOUT_MS)
                 val output = BufferedOutputStream(socket.getOutputStream())
                 val input = BufferedInputStream(socket.getInputStream())
-                output.write(byteArrayOf(0x04, 0x01, 0x01, 0xBB.toByte(), 0x01, 0x01, 0x01, 0x01, 0x00))
+                output.write(
+                    byteArrayOf(
+                        0x04, 0x01, 0x01, 0xBB.toByte(),
+                        0x01, 0x01, 0x01, 0x01, 0x00,
+                    )
+                )
                 output.flush()
-                require(input.read() in setOf(0x00, 0x04) && input.read() == 0x5A) { "SOCKS4 CONNECT failed" }
+                require(input.read() in setOf(0x00, 0x04) && input.read() == 0x5A) {
+                    "SOCKS4 CONNECT failed"
+                }
             }
             elapsedMs(started)
         }.getOrNull()
@@ -329,23 +371,16 @@ class FreeVpnCatalog {
         return true
     }
 
-    private fun evidencePriority(evidence: CountryEvidence): Int = when (evidence) {
-        CountryEvidence.LIVE_COUNTRY_API -> 0
-        CountryEvidence.ENDPOINT_GEO_VERIFIED -> 1
-        CountryEvidence.LABEL_ONLY -> 2
-        CountryEvidence.UNKNOWN -> 3
-    }
-
     private fun protocolPriority(protocol: ProxyProtocol): Int = when (protocol) {
-        ProxyProtocol.HYSTERIA2 -> 0
-        ProxyProtocol.TUIC -> 1
-        ProxyProtocol.VLESS -> 2
-        ProxyProtocol.TROJAN -> 3
-        ProxyProtocol.SHADOWSOCKS -> 4
-        ProxyProtocol.VMESS -> 5
-        ProxyProtocol.SOCKS5 -> 6
-        ProxyProtocol.HTTP -> 7
-        ProxyProtocol.SOCKS4 -> 8
+        ProxyProtocol.SOCKS5 -> 0
+        ProxyProtocol.HTTP -> 1
+        ProxyProtocol.SOCKS4 -> 2
+        ProxyProtocol.HYSTERIA2 -> 3
+        ProxyProtocol.TUIC -> 4
+        ProxyProtocol.VLESS -> 5
+        ProxyProtocol.TROJAN -> 6
+        ProxyProtocol.SHADOWSOCKS -> 7
+        ProxyProtocol.VMESS -> 8
     }
 
     private fun <T> roundRobin(groups: List<List<T>>): List<T> = buildList {
@@ -366,29 +401,107 @@ class FreeVpnCatalog {
     private data class CatalogSource(
         val id: String,
         val url: String,
-        val countryEvidence: CountryEvidence,
         val linePrefix: String? = null,
+        val format: SourceFormat = SourceFormat.TEXT,
     ) {
+        fun shareLines(body: String): Sequence<String> = when (format) {
+            SourceFormat.TEXT -> body.lineSequence()
+            SourceFormat.SOCKS5PROXIES_JSON -> Socks5ProxiesPublicFeed.shareLines(body)
+        }
+
         fun normalize(line: String): String {
             if (linePrefix == null || "://" in line) return line
             return "$linePrefix$line"
         }
     }
 
+    private enum class SourceFormat {
+        TEXT,
+        SOCKS5PROXIES_JSON,
+    }
+
     companion object {
-        private const val FETCH_TIMEOUT_MS = 7_000
-        private const val GEO_TIMEOUT_MS = 2_500
+        private const val FETCH_TIMEOUT_MS = 6_000
+        private const val GEO_TIMEOUT_MS = 2_800
         private const val PREFLIGHT_TIMEOUT_MS = 2_000
-        private const val PROTOCOL_PREFLIGHT_TIMEOUT_MS = 2_500
+        private const val PROTOCOL_PREFLIGHT_TIMEOUT_MS = 2_800
         private const val MAX_SOURCE_BYTES = 4L * 1024L * 1024L
         private const val MAX_GEO_RESPONSE_CHARS = 8_192
-        private const val MAX_PER_SOURCE = 80
-        private const val MAX_PREFLIGHT_CANDIDATES = 260
-        private const val MAX_LABEL_GEO_CANDIDATES = 48
-        private const val MAX_GEO_CONCURRENCY = 6
-        private const val MAX_PREFLIGHT_CONCURRENCY = 18
-        const val MAX_CONNECT_ATTEMPTS = 30
-        private val COUNTRY_CODE_REGEX = Regex("\\\"country_code\\\"\\s*:\\s*\\\"([A-Za-z]{2})\\\"")
+        private const val MAX_PER_SOURCE = 100
+        private const val MAX_PREFLIGHT_CANDIDATES = 280
+        private const val MAX_GEO_CANDIDATES = 64
+        private const val MAX_GEO_CONCURRENCY = 5
+        private const val MAX_PREFLIGHT_CONCURRENCY = 20
+        const val MAX_CONNECT_ATTEMPTS = 24
+
+        private val IPWHO_COUNTRY_CODE_REGEX =
+            Regex("\\\"country_code\\\"\\s*:\\s*\\\"([A-Za-z]{2})\\\"")
+        private val COUNTRY_IS_CODE_REGEX =
+            Regex("\\\"country\\\"\\s*:\\s*\\\"([A-Za-z]{2})\\\"")
+    }
+}
+
+/**
+ * Adapter for the documented public `/api/proxies` endpoint. HTTPS-only proxies are deliberately
+ * ignored until the preflight layer performs a real TLS-to-proxy handshake; treating them as
+ * plaintext HTTP was a previous source of false failures.
+ */
+internal object Socks5ProxiesPublicFeed {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun shareLines(body: String): Sequence<String> {
+        val data = runCatching {
+            json.parseToJsonElement(body).jsonObject["data"]?.jsonArray
+        }.getOrNull() ?: return emptySequence()
+
+        return data.asSequence().flatMap { element ->
+            val obj = runCatching { element.jsonObject }.getOrNull()
+                ?: return@flatMap emptySequence()
+            val host = obj["host"]?.jsonPrimitive?.contentOrNull
+                ?: obj["ip"]?.jsonPrimitive?.contentOrNull
+                ?: return@flatMap emptySequence()
+            val port = obj["port"]?.jsonPrimitive?.intOrNull
+                ?: return@flatMap emptySequence()
+            if (host.isBlank() || port !in 1..65535) return@flatMap emptySequence()
+
+            val reportedProtocols = runCatching {
+                obj["protocols"]?.jsonArray
+                    ?.mapNotNull { it.jsonPrimitive.contentOrNull?.lowercase() }
+            }.getOrNull().orEmpty()
+
+            val protocols = if (reportedProtocols.isNotEmpty()) {
+                reportedProtocols
+            } else {
+                buildList {
+                    if (obj["socks5"]?.jsonPrimitive?.intOrNull == 1) add("socks5")
+                    if (obj["socks4"]?.jsonPrimitive?.intOrNull == 1) add("socks4")
+                    if (obj["http"]?.jsonPrimitive?.intOrNull == 1) add("http")
+                }
+            }
+
+            val endpoint = if (':' in host && !host.startsWith('[')) "[$host]:$port" else "$host:$port"
+            protocols.asSequence().mapNotNull { protocol ->
+                when (protocol) {
+                    "socks5" -> "socks5://$endpoint"
+                    "socks4" -> "socks4://$endpoint"
+                    "http" -> "http://$endpoint"
+                    else -> null
+                }
+            }
+        }
+    }
+}
+
+/** Pure policy so disagreements between geo providers are regression-testable. */
+internal object CountryVerificationPolicy {
+    fun accept(expected: String, providerA: String?, providerB: String?): Boolean {
+        val expectedCode = expected.trim().uppercase()
+        val reports = listOfNotNull(providerA, providerB)
+            .map { it.trim().uppercase() }
+            .filter { it.length == 2 }
+        if (reports.isEmpty()) return false
+        if (reports.any { it != expectedCode }) return false
+        return reports.any { it == expectedCode }
     }
 }
 
@@ -408,8 +521,7 @@ data class FreeVpnCandidate(
 
 enum class CountryEvidence {
     UNKNOWN,
-    LABEL_ONLY,
-    LIVE_COUNTRY_API,
+    SOURCE_COUNTRY_CLAIM,
     ENDPOINT_GEO_VERIFIED,
 }
 

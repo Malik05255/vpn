@@ -37,11 +37,27 @@ class AutomaticVpnManager(context: Context) {
         VpnDiagnostics.record(appContext, "discovery.start", "country=${country.code}")
 
         onProgress("جاري جمع واختبار المسارات المجانية في ${country.displayNameAr}…")
-        val candidates = runCatching { catalog.discover(country) }
+        val discovered = runCatching { catalog.discover(country) }
             .onFailure { error ->
                 VpnDiagnostics.record(appContext, "discovery.failed", error.userMessage())
             }
             .getOrThrow()
+
+        // Defence in depth: the catalog already performs endpoint geolocation, but the connection
+        // boundary independently refuses anything that did not survive that verification. This
+        // prevents a future source/parser regression from ever reaching libbox as an untrusted
+        // country-labelled candidate.
+        val candidates = discovered.filter { candidate ->
+            val verified = candidate.countryEvidence == CountryEvidence.ENDPOINT_GEO_VERIFIED
+            if (!verified) {
+                VpnDiagnostics.record(
+                    appContext,
+                    "discovery.reject_unverified",
+                    "protocol=${candidate.protocol.name}; source=${candidate.sourceId}; evidence=${candidate.countryEvidence}",
+                )
+            }
+            verified
+        }
         val failures = mutableListOf<String>()
 
         val sourceSummary = candidates
@@ -60,11 +76,11 @@ class AutomaticVpnManager(context: Context) {
         VpnDiagnostics.record(
             appContext,
             "discovery.ready",
-            "candidates=${candidates.size}; protocols=$protocolSummary; sources=$sourceSummary",
+            "discovered=${discovered.size}; verified=${candidates.size}; protocols=$protocolSummary; sources=$sourceSummary",
         )
 
         if (candidates.isNotEmpty()) {
-            onProgress("وجدنا ${candidates.size} مسارات اجتازت الفحص الأولي؛ نتحقق من دولة الخروج فعلياً…")
+            onProgress("وجدنا ${candidates.size} مسارات حية وموثقة جغرافياً؛ نتحقق من دولة الخروج فعلياً…")
         }
 
         candidates.forEachIndexed { index, candidate ->
@@ -78,6 +94,9 @@ class AutomaticVpnManager(context: Context) {
 
             val attempt = runCatching {
                 withTimeout(ATTEMPT_TIMEOUT_MS) {
+                    check(candidate.countryEvidence == CountryEvidence.ENDPOINT_GEO_VERIFIED) {
+                        "تم رفض مسار غير موثّق قبل تشغيل محرك VPN"
+                    }
                     val config = SingBoxConfigBuilder.build(candidate)
                     VpnDiagnostics.record(appContext, "attempt.config", "${candidate.protocol.name}/${candidate.sourceId}")
                     val configFile = writeRuntimeConfig(country, config)
@@ -125,14 +144,14 @@ class AutomaticVpnManager(context: Context) {
         VpnDiagnostics.record(
             appContext,
             "connection.exhausted",
-            "candidates=${candidates.size}; attempted=${failures.size}",
+            "discovered=${discovered.size}; verified=${candidates.size}; attempted=${failures.size}",
         )
         throw IllegalStateException(
             buildString {
                 if (candidates.isEmpty()) {
-                    append("لم نجد مساراً حياً قابلاً للاستخدام في ${country.displayNameAr} من المصادر الحالية.")
+                    append("لا يوجد حالياً خادم مجاني حي وموثّق في ${country.displayNameAr}. لم نشغّل أي عقدة غير مؤكدة حتى لا يحدث اتصال خاطئ أو كراش.")
                 } else {
-                    append("اختبرنا ${candidates.size} مسارات في ${country.displayNameAr} ولم يثبت أي مسار دولة الخروج المطلوبة حتى الآن.")
+                    append("اختبرنا ${candidates.size} خوادم موثقة جغرافياً في ${country.displayNameAr}، لكن لم يثبت أي منها عنوان خروج صالحاً بعد تشغيل النفق.")
                 }
                 if (recent.isNotEmpty()) {
                     append(" آخر النتائج: ")
