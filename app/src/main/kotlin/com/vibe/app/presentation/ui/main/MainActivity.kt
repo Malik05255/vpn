@@ -1,46 +1,77 @@
 package com.vibe.app.presentation.ui.main
 
+import android.app.Activity
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import androidx.navigation.compose.rememberNavController
+import com.vibe.app.vpn.VpnScreen
+import com.vibe.app.vpn.VpnViewModel
 import dagger.hilt.android.AndroidEntryPoint
-import com.vibe.app.presentation.common.LocalDynamicTheme
-import com.vibe.app.presentation.common.LocalThemeMode
-import com.vibe.app.presentation.common.SetupNavGraph
-import com.vibe.app.presentation.common.ThemeSettingProvider
-import com.vibe.app.presentation.theme.VibeAppTheme
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
-
-    private val mainViewModel: MainViewModel by viewModels()
+    private val vpnViewModel: VpnViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        installSplashScreen().apply {
-            setKeepOnScreenCondition {
-                !mainViewModel.isReady.value
-            }
-        }
+        installSplashScreen()
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
-        // Prevent keyboard from pushing the entire view up - composable handles insets via imePadding()
-        window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
-
         setContent {
-            val navController = rememberNavController()
+            val state = vpnViewModel.uiState.collectAsStateWithLifecycle().value
+            val darkTheme = isSystemInDarkTheme()
 
-            ThemeSettingProvider {
-                VibeAppTheme(
-                    dynamicTheme = LocalDynamicTheme.current,
-                    themeMode = LocalThemeMode.current
-                ) {
-                    SetupNavGraph(navController)
+            val vpnPermissionLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.StartActivityForResult(),
+            ) { result ->
+                if (result.resultCode == Activity.RESULT_OK) {
+                    vpnViewModel.connectAuthorized()
+                } else {
+                    vpnViewModel.onVpnPermissionDenied()
                 }
+            }
+
+            val profilePicker = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.OpenDocument(),
+            ) { uri ->
+                if (uri != null) vpnViewModel.importProfile(uri)
+            }
+
+            MaterialTheme(
+                colorScheme = if (darkTheme) darkColorScheme() else lightColorScheme(),
+            ) {
+                VpnScreen(
+                    state = state,
+                    onCountrySelected = vpnViewModel::selectCountry,
+                    onConnect = {
+                        val permissionIntent = vpnViewModel.prepareVpnPermission()
+                        if (permissionIntent == null) {
+                            vpnViewModel.connectAuthorized()
+                        } else {
+                            vpnPermissionLauncher.launch(permissionIntent)
+                        }
+                    },
+                    onDisconnect = vpnViewModel::disconnect,
+                    onImportProfile = {
+                        profilePicker.launch(
+                            arrayOf(
+                                "text/plain",
+                                "application/octet-stream",
+                                "application/x-wireguard-profile",
+                            )
+                        )
+                    },
+                )
             }
         }
     }
