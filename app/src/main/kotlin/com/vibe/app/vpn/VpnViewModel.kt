@@ -16,7 +16,7 @@ import kotlinx.coroutines.launch
 class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private val profileStore = VpnProfileStore(application)
     private val wireGuard = WireGuardManager(application)
-    private val ipClient = IpLocationClient()
+    private val qualityClient = ConnectionQualityClient()
 
     private val _uiState = MutableStateFlow(
         VpnUiState(configuredCountries = configuredCountries())
@@ -25,7 +25,15 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectCountry(country: VpnCountry) {
         if (_uiState.value.connectionStatus != ConnectionStatus.DISCONNECTED) return
-        _uiState.update { it.copy(selectedCountry = country, errorMessage = null, noticeMessage = null) }
+        _uiState.update {
+            it.copy(
+                selectedCountry = country,
+                errorMessage = null,
+                noticeMessage = null,
+                ipLocation = null,
+                qualityReport = null,
+            )
+        }
     }
 
     fun prepareVpnPermission(): Intent? = wireGuard.preparePermissionIntent()
@@ -53,8 +61,9 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     connectionStatus = ConnectionStatus.CONNECTING,
                     errorMessage = null,
-                    noticeMessage = null,
+                    noticeMessage = "جاري التحقق من الدولة والسرعة وزمن الاستجابة...",
                     ipLocation = null,
+                    qualityReport = null,
                 )
             }
 
@@ -65,17 +74,21 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
                 // Give Android a short moment to move subsequent sockets to the new VPN network.
                 delay(900)
-                val location = ipClient.check()
-                check(location.countryCode.equals(country.code, ignoreCase = true)) {
-                    "تم إنشاء النفق لكن عنوان الخروج ظهر من ${location.country.ifBlank { location.countryCode.ifBlank { "دولة أخرى" } }} وليس ${country.displayNameAr}."
-                }
-                location
-            }.onSuccess { location ->
+
+                // Do not trust the tunnel state alone. A successful result here means:
+                // 1) two independent geo checks agree on the requested country,
+                // 2) the public IP is consistent,
+                // 3) median HTTPS latency is inside the quality budget,
+                // 4) measured downstream throughput is above the minimum quality floor.
+                qualityClient.verify(country)
+            }.onSuccess { report ->
                 _uiState.update {
                     it.copy(
                         connectionStatus = ConnectionStatus.CONNECTED,
-                        ipLocation = location,
+                        ipLocation = report.ipLocation,
+                        qualityReport = report,
                         errorMessage = null,
+                        noticeMessage = "تم التحقق من الاتصال فعلياً؛ الدولة والسرعة والجودة ضمن الحدود المطلوبة.",
                     )
                 }
             }.onFailure { error ->
@@ -84,7 +97,9 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         connectionStatus = ConnectionStatus.DISCONNECTED,
                         ipLocation = null,
-                        errorMessage = error.message ?: "تعذر الاتصال بالـVPN.",
+                        qualityReport = null,
+                        noticeMessage = null,
+                        errorMessage = error.message ?: "تعذر إنشاء اتصال VPN موثوق وعالي الجودة.",
                     )
                 }
             }
@@ -93,13 +108,20 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     fun disconnect() {
         viewModelScope.launch {
-            _uiState.update { it.copy(connectionStatus = ConnectionStatus.DISCONNECTING, errorMessage = null) }
+            _uiState.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.DISCONNECTING,
+                    errorMessage = null,
+                    noticeMessage = null,
+                )
+            }
             runCatching { wireGuard.disconnect() }
                 .onSuccess {
                     _uiState.update {
                         it.copy(
                             connectionStatus = ConnectionStatus.DISCONNECTED,
                             ipLocation = null,
+                            qualityReport = null,
                             noticeMessage = "تم فصل الاتصال.",
                         )
                     }
@@ -109,6 +131,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                             connectionStatus = ConnectionStatus.DISCONNECTED,
                             ipLocation = null,
+                            qualityReport = null,
                             errorMessage = error.message ?: "تعذر فصل الاتصال بصورة سليمة.",
                         )
                     }
@@ -152,6 +175,7 @@ data class VpnUiState(
     val configuredCountries: Set<VpnCountry> = emptySet(),
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
     val ipLocation: IpLocation? = null,
+    val qualityReport: ConnectionQualityReport? = null,
     val errorMessage: String? = null,
     val noticeMessage: String? = null,
 )
