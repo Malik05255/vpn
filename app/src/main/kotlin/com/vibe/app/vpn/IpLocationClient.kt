@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.HttpURLConnection
@@ -31,6 +32,9 @@ class IpLocationClient {
                 ip = json["ip"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                 countryCode = json["country_code"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                 country = json["country"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                city = json["city"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                latitude = json["latitude"]?.jsonPrimitive?.doubleOrNull,
+                longitude = json["longitude"]?.jsonPrimitive?.doubleOrNull,
             )
         } finally {
             connection.disconnect()
@@ -46,4 +50,7 @@ data class IpLocation(
     val ip: String,
     val countryCode: String,
     val country: String,
+    val city: String = "",
+    val latitude: Double? = null,
+    val longitude: Double? = null,
 )
