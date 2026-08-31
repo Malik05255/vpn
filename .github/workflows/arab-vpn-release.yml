@@ -63,8 +63,8 @@ jobs:
             *) echo "Tag must start with arab-vpn-v" >&2; exit 1 ;;
           esac
 
-          VERSION_CODE=$(grep -m1 'versionCode = ' app/build.gradle.kts | sed -E 's/.*versionCode = ([0-9]+).*/\1/')
-          VERSION_NAME=$(grep -m1 'versionName = ' app/build.gradle.kts | sed -E 's/.*versionName = "([^"]+)".*/\1/')
+          VERSION_CODE=$(grep -m1 'versionCode = ' arabvpn/build.gradle.kts | sed -E 's/.*versionCode = ([0-9]+).*/\1/')
+          VERSION_NAME=$(grep -m1 'versionName = ' arabvpn/build.gradle.kts | sed -E 's/.*versionName = "([^"]+)".*/\1/')
           test -n "$VERSION_CODE"
           test -n "$VERSION_NAME"
 
@@ -72,10 +72,10 @@ jobs:
           echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
           echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Build release APK
+      - name: Build standalone release APK
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon app:assembleRelease
+          ./gradlew --no-daemon :arabvpn:assembleRelease
 
       - name: Sign release with stable key
         shell: bash
@@ -87,9 +87,9 @@ jobs:
           BUILD_TOOLS=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
           ZIPALIGN="$BUILD_TOOLS/zipalign"
           APKSIGNER="$BUILD_TOOLS/apksigner"
-          UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
+          UNSIGNED="arabvpn/build/outputs/apk/release/arabvpn-release-unsigned.apk"
           if [ ! -f "$UNSIGNED" ]; then
-            UNSIGNED=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' | head -1)
+            UNSIGNED=$(find arabvpn/build/outputs/apk/release -maxdepth 1 -name '*.apk' | head -1)
           fi
           test -f "$UNSIGNED"
 
