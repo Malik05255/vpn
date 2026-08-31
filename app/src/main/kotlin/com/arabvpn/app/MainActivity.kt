@@ -24,6 +24,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -36,6 +37,54 @@ import com.vibe.app.vpn.VpnScreen
 import com.vibe.app.vpn.VpnViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+
+private val ArabVpnLightColors = lightColorScheme(
+    primary = Color(0xFF5B5BF7),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFE7E7FF),
+    onPrimaryContainer = Color(0xFF19194F),
+    secondary = Color(0xFF00A7A5),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFD8F7F4),
+    onSecondaryContainer = Color(0xFF003735),
+    tertiary = Color(0xFFFF7352),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFFFE2DA),
+    onTertiaryContainer = Color(0xFF571507),
+    background = Color(0xFFF5F7FC),
+    onBackground = Color(0xFF141827),
+    surface = Color(0xFFFFFFFF),
+    onSurface = Color(0xFF141827),
+    surfaceVariant = Color(0xFFE8EBF4),
+    onSurfaceVariant = Color(0xFF596074),
+    outline = Color(0xFF8990A2),
+    outlineVariant = Color(0xFFD7DBE7),
+    error = Color(0xFFD23F47),
+)
+
+private val ArabVpnDarkColors = darkColorScheme(
+    primary = Color(0xFF9A9BFF),
+    onPrimary = Color(0xFF111147),
+    primaryContainer = Color(0xFF2E2E73),
+    onPrimaryContainer = Color(0xFFE4E4FF),
+    secondary = Color(0xFF5DE0D8),
+    onSecondary = Color(0xFF003735),
+    secondaryContainer = Color(0xFF0D4B49),
+    onSecondaryContainer = Color(0xFFBDF4EF),
+    tertiary = Color(0xFFFFA187),
+    onTertiary = Color(0xFF5C1707),
+    tertiaryContainer = Color(0xFF71301F),
+    onTertiaryContainer = Color(0xFFFFDAD0),
+    background = Color(0xFF070A12),
+    onBackground = Color(0xFFF2F4FA),
+    surface = Color(0xFF0D1220),
+    onSurface = Color(0xFFF2F4FA),
+    surfaceVariant = Color(0xFF1A2030),
+    onSurfaceVariant = Color(0xFFB9C0D0),
+    outline = Color(0xFF7F8799),
+    outlineVariant = Color(0xFF303748),
+    error = Color(0xFFFF7B82),
+)
 
 /**
  * Arab VPN launcher activity. It is intentionally independent of VibeApp/Hilt so the two
@@ -92,7 +141,7 @@ class MainActivity : ComponentActivity() {
             }
 
             MaterialTheme(
-                colorScheme = if (darkTheme) darkColorScheme() else lightColorScheme(),
+                colorScheme = if (darkTheme) ArabVpnDarkColors else ArabVpnLightColors,
             ) {
                 VpnScreen(
                     state = state,
