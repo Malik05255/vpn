@@ -14,7 +14,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private val automaticVpn = AutomaticVpnManager(application)
     private val mockLocation = MockLocationController(application)
 
-    private val _uiState = MutableStateFlow(VpnUiState())
+    private val _uiState = MutableStateFlow(initialUiState())
     val uiState: StateFlow<VpnUiState> = _uiState.asStateFlow()
 
     fun selectCountry(country: VpnCountry) {
@@ -33,6 +33,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 preflightLatencyMs = null,
                 locationSyncStatus = LocationSyncStatus.IDLE,
                 locationTarget = null,
+                showBackgroundPrompt = false,
             )
         }
     }
@@ -46,6 +47,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 errorMessage = "يجب السماح للتطبيق بإنشاء اتصال VPN حتى يتم تشغيل النفق.",
                 noticeMessage = null,
+                showBackgroundPrompt = false,
             )
         }
     }
@@ -56,8 +58,13 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 connectionStatus = ConnectionStatus.DISCONNECTED,
                 noticeMessage = null,
                 errorMessage = error.message ?: "تعذر بدء خدمة VPN على هذا الجهاز.",
+                showBackgroundPrompt = false,
             )
         }
+    }
+
+    fun dismissBackgroundPrompt() {
+        _uiState.update { it.copy(showBackgroundPrompt = false) }
     }
 
     fun connectAuthorized() {
@@ -79,6 +86,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                     preflightLatencyMs = null,
                     locationSyncStatus = LocationSyncStatus.SYNCING,
                     locationTarget = null,
+                    showBackgroundPrompt = false,
                 )
             }
 
@@ -92,9 +100,10 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }.onSuccess { result ->
                 val report = result.quality
-                val locationResult = mockLocation.start(country, report.ipLocation)
+                val locationTarget = CountryLocationResolver.resolve(country, report.ipLocation)
+                val locationResult = SingBoxVpnService.syncLocation(getApplication(), locationTarget)
                 val locationState = locationResult.toUiStatus()
-                val locationTarget = (locationResult as? LocationSyncResult.Active)?.location
+                val activeLocation = (locationResult as? LocationSyncResult.Active)?.location
 
                 _uiState.update {
                     it.copy(
@@ -107,7 +116,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                         sourceId = result.sourceId,
                         preflightLatencyMs = result.preflightLatencyMs,
                         locationSyncStatus = locationState,
-                        locationTarget = locationTarget,
+                        locationTarget = activeLocation,
                         errorMessage = (locationResult as? LocationSyncResult.Failed)?.reason,
                         noticeMessage = when (locationResult) {
                             is LocationSyncResult.Active ->
@@ -117,11 +126,11 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                             is LocationSyncResult.Failed ->
                                 "VPN وIP وDNS جاهزة، لكن تعذر مزامنة الموقع حالياً."
                         },
+                        showBackgroundPrompt = locationResult is LocationSyncResult.Active,
                     )
                 }
             }.onFailure { error ->
                 runCatching { automaticVpn.disconnect() }
-                runCatching { mockLocation.stop() }
                 _uiState.update {
                     it.copy(
                         connectionStatus = ConnectionStatus.DISCONNECTED,
@@ -137,6 +146,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                         noticeMessage = null,
                         errorMessage = error.message
                             ?: "تعذر العثور على اتصال مجاني يحقق معايير الدولة والسرعة والجودة.",
+                        showBackgroundPrompt = false,
                     )
                 }
             }
@@ -154,22 +164,28 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             _uiState.update { it.copy(locationSyncStatus = LocationSyncStatus.SYNCING) }
-            when (val result = mockLocation.start(country, ipLocation)) {
+            val target = CountryLocationResolver.resolve(country, ipLocation)
+            when (val result = SingBoxVpnService.syncLocation(getApplication(), target)) {
                 is LocationSyncResult.Active -> _uiState.update {
                     it.copy(
                         locationSyncStatus = LocationSyncStatus.ACTIVE,
                         locationTarget = result.location,
                         errorMessage = null,
                         noticeMessage = "تمت مزامنة الموقع تلقائياً مع اتصال ${country.displayNameAr}.",
+                        showBackgroundPrompt = true,
                     )
                 }
                 LocationSyncResult.NeedsDeveloperSetup -> _uiState.update {
-                    it.copy(locationSyncStatus = LocationSyncStatus.NEEDS_SETUP)
+                    it.copy(
+                        locationSyncStatus = LocationSyncStatus.NEEDS_SETUP,
+                        showBackgroundPrompt = false,
+                    )
                 }
                 is LocationSyncResult.Failed -> _uiState.update {
                     it.copy(
                         locationSyncStatus = LocationSyncStatus.FAILED,
                         errorMessage = result.reason,
+                        showBackgroundPrompt = false,
                     )
                 }
             }
@@ -184,10 +200,10 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                     connectionStatus = ConnectionStatus.DISCONNECTING,
                     errorMessage = null,
                     noticeMessage = null,
+                    showBackgroundPrompt = false,
                 )
             }
             val vpnResult = runCatching { automaticVpn.disconnect() }
-            runCatching { mockLocation.stop() }
 
             _uiState.update {
                 it.copy(
@@ -203,9 +219,19 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                     locationTarget = null,
                     noticeMessage = if (vpnResult.isSuccess) "تم فصل الاتصال والموقع." else null,
                     errorMessage = vpnResult.exceptionOrNull()?.message,
+                    showBackgroundPrompt = false,
                 )
             }
         }
+    }
+
+    private fun initialUiState(): VpnUiState = if (SingBoxVpnService.isRunning()) {
+        VpnUiState(
+            connectionStatus = ConnectionStatus.CONNECTED,
+            noticeMessage = "Arab VPN يعمل حالياً في الخلفية. اضغط فصل الاتصال إذا أردت إيقاف الجلسة.",
+        )
+    } else {
+        VpnUiState()
     }
 }
 
@@ -229,6 +255,7 @@ data class VpnUiState(
     val locationTarget: CountryLocation? = null,
     val errorMessage: String? = null,
     val noticeMessage: String? = null,
+    val showBackgroundPrompt: Boolean = false,
 )
 
 enum class ConnectionStatus {
