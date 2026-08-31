@@ -25,6 +25,7 @@ android {
     signingConfigs {
         getByName("debug") {
             storeFile = devKeyFile
+            storeType = "JKS"
             storePassword = "arabvpn-dev-only-2026"
             keyAlias = "arabvpn-dev"
             keyPassword = "arabvpn-dev-only-2026"
