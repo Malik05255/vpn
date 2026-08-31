@@ -42,8 +42,14 @@ jobs:
           cache: gradle
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-      - name: Assemble standalone debug APK
-        run: ./gradlew --no-daemon :arabvpn:assembleDebug
+      - name: Assemble standalone debug APK with monotonic dev version
+        shell: bash
+        run: |
+          VERSION_CODE=$((100000 + GITHUB_RUN_NUMBER))
+          VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}-dev"
+          ./gradlew --no-daemon :arabvpn:assembleDebug \
+            -ParabVpnVersionCode="$VERSION_CODE" \
+            -ParabVpnVersionName="$VERSION_NAME"
       - name: Upload standalone debug APK
         uses: actions/upload-artifact@v4
         with:
@@ -73,7 +79,13 @@ jobs:
       - name: Grant execute permission
         run: chmod +x gradlew ci/arab-vpn-startup-smoke-test.sh
       - name: Build standalone debug APK
-        run: ./gradlew --no-daemon :arabvpn:assembleDebug
+        shell: bash
+        run: |
+          VERSION_CODE=$((100000 + GITHUB_RUN_NUMBER))
+          VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}-dev"
+          ./gradlew --no-daemon :arabvpn:assembleDebug \
+            -ParabVpnVersionCode="$VERSION_CODE" \
+            -ParabVpnVersionName="$VERSION_NAME"
       - name: Boot emulator, install and launch Arab VPN
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -149,3 +161,109 @@ jobs:
         run: chmod +x gradlew
       - name: Verify minified release build
         run: ./gradlew --no-daemon :arabvpn:assembleRelease
+
+  publish-dev-update:
+    name: Publish Development Update
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    needs:
+      - assemble-debug
+      - startup-smoke-test
+      - unit-tests
+      - android-lint
+      - release-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Download verified APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: arab-vpn-debug-apk
+          path: dist-input
+
+      - name: Build dev update manifest and delta
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bsdiff
+
+          VERSION_CODE=$((100000 + GITHUB_RUN_NUMBER))
+          VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}-dev"
+          TAG="arab-vpn-dev-v${VERSION_CODE}"
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+
+          mkdir -p dist previous
+          cp dist-input/arabvpn-debug.apk dist/ArabVPN-dev.apk
+          FULL_SHA=$(sha256sum dist/ArabVPN-dev.apk | awk '{print $1}')
+          FULL_SIZE=$(stat -c%s dist/ArabVPN-dev.apk)
+
+          PREV_TAG=$(gh release list --limit 50 --json tagName,isDraft \
+            --jq '[.[] | select(.tagName | startswith("arab-vpn-dev-v")) | select(.isDraft == false)][0].tagName // ""')
+
+          PATCH_JSON='[]'
+          PATCH_FILE=''
+          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$TAG" ]; then
+            if gh release download "$PREV_TAG" -p 'ArabVPN-dev.apk' -p 'update.json' --dir previous; then
+              OLD_CODE=$(jq -r '.versionCode // empty' previous/update.json)
+              if [ -n "$OLD_CODE" ] && [ "$OLD_CODE" != "$VERSION_CODE" ]; then
+                PATCH_FILE="ArabVPN-${OLD_CODE}-to-${VERSION_CODE}.bsdiff"
+                bsdiff previous/ArabVPN-dev.apk dist/ArabVPN-dev.apk "dist/$PATCH_FILE"
+                PATCH_SIZE=$(stat -c%s "dist/$PATCH_FILE")
+                if [ "$PATCH_SIZE" -lt "$FULL_SIZE" ]; then
+                  PATCH_SHA=$(sha256sum "dist/$PATCH_FILE" | awk '{print $1}')
+                  PATCH_JSON=$(jq -n \
+                    --argjson from "$OLD_CODE" \
+                    --arg url "$BASE_URL/$PATCH_FILE" \
+                    --arg sha "$PATCH_SHA" \
+                    --argjson size "$PATCH_SIZE" \
+                    '[{fromVersionCode:$from,url:$url,sha256:$sha,size:$size}]')
+                else
+                  rm -f "dist/$PATCH_FILE"
+                  PATCH_FILE=''
+                fi
+              fi
+            fi
+          fi
+
+          jq -n \
+            --argjson versionCode "$VERSION_CODE" \
+            --arg versionName "$VERSION_NAME" \
+            --arg fullUrl "$BASE_URL/ArabVPN-dev.apk" \
+            --arg fullSha "$FULL_SHA" \
+            --argjson fullSize "$FULL_SIZE" \
+            --argjson patches "$PATCH_JSON" \
+            '{versionCode:$versionCode,versionName:$versionName,full:{url:$fullUrl,sha256:$fullSha,size:$fullSize},patches:$patches}' \
+            > dist/update.json
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "patch_file=$PATCH_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Publish development release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.package.outputs.tag }}"
+          VERSION_NAME="${{ steps.package.outputs.version_name }}"
+          ASSETS=(dist/ArabVPN-dev.apk dist/update.json)
+          if [ -n "${{ steps.package.outputs.patch_file }}" ]; then
+            ASSETS+=("dist/${{ steps.package.outputs.patch_file }}")
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          else
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "Arab VPN $VERSION_NAME" \
+              --notes "قناة التطوير التلقائية لـ Arab VPN. هذه النسخ تحمل توقيع تطوير ثابت لتجربة التحديث فوق النسخة السابقة." \
+              --prerelease
+          fi

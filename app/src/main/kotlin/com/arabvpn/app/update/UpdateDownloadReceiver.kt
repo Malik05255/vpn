@@ -12,22 +12,26 @@ import androidx.work.WorkManager
 class UpdateDownloadReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action != ACTION_DOWNLOAD_UPDATE) return
-        val request = OneTimeWorkRequestBuilder<UpdateDownloadWorker>()
-            .setConstraints(
-                Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build()
-            )
-            .build()
-        WorkManager.getInstance(context).enqueueUniqueWork(
-            DOWNLOAD_WORK,
-            ExistingWorkPolicy.REPLACE,
-            request,
-        )
+        enqueue(context)
     }
 
     companion object {
         const val ACTION_DOWNLOAD_UPDATE = "com.malik05255.arabvpn.DOWNLOAD_UPDATE"
         private const val DOWNLOAD_WORK = "arab-vpn-download-update"
+
+        fun enqueue(context: Context) {
+            val request = OneTimeWorkRequestBuilder<UpdateDownloadWorker>()
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+                )
+                .build()
+            WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+                DOWNLOAD_WORK,
+                ExistingWorkPolicy.REPLACE,
+                request,
+            )
+        }
     }
 }
