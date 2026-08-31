@@ -51,15 +51,10 @@ class FreeVpnCatalog {
             }.awaitAll()
         }
 
-        // A live country API is deliberately interleaved first. Community "country" files are
-        // discovery hints only and receive no implicit trust.
         val raw = roundRobin(sourceCandidates)
             .distinctBy { candidate -> candidate.fingerprint }
             .take(MAX_PREFLIGHT_CANDIDATES)
 
-        // Geolocate only a bounded number of label-only endpoints. This removes the common failure
-        // where an "Egypt.txt" file actually contains US/DE/XX relays while keeping connection time
-        // and free geo-API usage bounded.
         val geoBudget = Semaphore(MAX_GEO_CONCURRENCY)
         val geoChecked = coroutineScope {
             var labelBudgetUsed = 0
@@ -107,21 +102,16 @@ class FreeVpnCatalog {
         val lowerCode = country.code.lowercase()
         val countryName = country.displayNameEn
         return listOf(
-            // Primary: ProxyScrape v4 live API. Their live list is continuously checked and country
-            // filtered at request time. Final exit-country verification is still mandatory.
             CatalogSource(
                 id = "proxyscrape-live-country",
                 url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&proxy_format=protocolipport&format=text&country=$lowerCode&timeout=10000",
                 countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
             ),
-            // Same provider's GitHub mirror is a fallback when the live API is temporarily blocked.
             CatalogSource(
                 id = "proxyscrape-country-mirror",
                 url = "https://raw.githubusercontent.com/ProxyScrape/free-proxy-list/main/proxies/countries/$lowerCode/data.txt",
                 countryEvidence = CountryEvidence.LIVE_COUNTRY_API,
             ),
-            // The following feeds are useful for protocol diversity, but their country filenames
-            // are not proof. We endpoint-geolocate them before any VPN runtime is started.
             CatalogSource(
                 id = "argh73-country",
                 url = "https://raw.githubusercontent.com/Argh73/VpnConfigCollector/refs/heads/main/Splitted-By-Country/$countryName.txt",
@@ -214,7 +204,17 @@ class FreeVpnCatalog {
         ProxyProtocol.HTTP -> httpConnectPreflight(candidate)
         ProxyProtocol.SOCKS5 -> socks5Preflight(candidate)
         ProxyProtocol.SOCKS4 -> socks4Preflight(candidate)
+        // Hysteria2 and TUIC are QUIC/UDP protocols. A TCP connect test would reject every valid
+        // node by definition. DNS/public-endpoint resolution is the safe cheap preflight; libbox
+        // config validation + the time-bounded real tunnel attempt performs the protocol handshake.
+        ProxyProtocol.HYSTERIA2, ProxyProtocol.TUIC -> udpEndpointPreflight(candidate.server, candidate.port)
         else -> tcpPreflight(candidate.server, candidate.port)
+    }
+
+    private fun udpEndpointPreflight(host: String, port: Int): Long? {
+        if (port !in 1..65535) return null
+        val started = System.nanoTime()
+        return resolvePublicAddress(host)?.let { elapsedMs(started) }
     }
 
     private fun tcpPreflight(host: String, port: Int): Long? {
@@ -228,7 +228,6 @@ class FreeVpnCatalog {
         }.getOrNull()
     }
 
-    /** A TCP-open HTTP proxy is useless if it cannot establish CONNECT to HTTPS. */
     private fun httpConnectPreflight(candidate: FreeVpnCandidate): Long? {
         val started = System.nanoTime()
         return runCatching {
