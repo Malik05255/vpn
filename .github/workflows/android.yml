@@ -303,3 +303,16 @@ jobs:
               --notes "قناة التطوير التلقائية لـ Arab VPN. هذه النسخ تحمل توقيع تطوير ثابت لتجربة التحديث فوق النسخة السابقة." \
               --prerelease
           fi
+
+          # A fixed rolling manifest removes the expensive GitHub releases-list lookup from the
+          # Android hot path. update.json still points to immutable versioned APK/patch assets.
+          ROLLING_TAG="arab-vpn-dev-latest"
+          if gh release view "$ROLLING_TAG" >/dev/null 2>&1; then
+            gh release upload "$ROLLING_TAG" dist/update.json --clobber
+          else
+            gh release create "$ROLLING_TAG" dist/update.json \
+              --target "$GITHUB_SHA" \
+              --title "Arab VPN latest development manifest" \
+              --notes "Rolling manifest used by Arab VPN for one-request update discovery." \
+              --prerelease
+          fi
