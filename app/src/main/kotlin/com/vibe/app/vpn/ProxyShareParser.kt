@@ -1,7 +1,9 @@
 package com.vibe.app.vpn
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -20,6 +22,9 @@ object ProxyShareParser {
     fun parse(raw: String, sourceId: String): FreeVpnCandidate? = runCatching {
         val normalized = normalizeShareLink(raw)
         when {
+            normalized.startsWith("hysteria2://", ignoreCase = true) ||
+                normalized.startsWith("hy2://", ignoreCase = true) -> parseHysteria2(normalized, sourceId)
+            normalized.startsWith("tuic://", ignoreCase = true) -> parseTuic(normalized, sourceId)
             normalized.startsWith("trojan://", ignoreCase = true) -> parseTrojan(normalized, sourceId)
             normalized.startsWith("vless://", ignoreCase = true) -> parseVless(normalized, sourceId)
             normalized.startsWith("ss://", ignoreCase = true) -> parseShadowsocks(normalized, sourceId)
@@ -31,6 +36,105 @@ object ProxyShareParser {
             else -> null
         }
     }.getOrNull()
+
+    private fun parseHysteria2(raw: String, sourceId: String): FreeVpnCandidate? {
+        val normalized = if (raw.startsWith("hy2://", ignoreCase = true)) {
+            "hysteria2://" + raw.substringAfter("://")
+        } else raw
+        val uri = URI(normalized)
+        val host = uri.host ?: return null
+        val port = uri.port.takeIf { it in 1..65535 } ?: 443
+        val password = uri.rawUserInfo?.percentDecode().orEmpty()
+        if (password.isBlank()) return null
+        val query = query(uri.rawQuery)
+        val obfsType = query["obfs"]?.trim()?.lowercase().orEmpty()
+        if (obfsType.isNotEmpty() && obfsType !in setOf("salamander")) return null
+
+        val outbound = buildJsonObject {
+            put("type", "hysteria2")
+            put("tag", OUTBOUND_TAG)
+            put("server", host)
+            put("server_port", port)
+            put("password", password)
+            if (obfsType.isNotEmpty()) {
+                val obfsPassword = (query["obfs-password"] ?: query["obfs_password"])
+                    ?.takeIf(String::isNotBlank)
+                    ?: return null
+                putJsonObject("obfs") {
+                    put("type", obfsType)
+                    put("password", obfsPassword)
+                }
+            }
+            putJsonObject("tls") {
+                put("enabled", true)
+                (query["sni"] ?: query["peer"] ?: query["servername"])
+                    ?.takeIf(String::isNotBlank)
+                    ?.let { put("server_name", it) }
+                query["alpn"]?.split(',')
+                    ?.map(String::trim)
+                    ?.filter(String::isNotBlank)
+                    ?.takeIf(List<String>::isNotEmpty)
+                    ?.let { values -> put("alpn", JsonArray(values.map(::JsonPrimitive))) }
+                if (
+                    query.boolean("insecure") ||
+                    query.boolean("allowInsecure") ||
+                    query.boolean("allow_insecure")
+                ) put("insecure", true)
+            }
+        }
+        return candidate(ProxyProtocol.HYSTERIA2, host, port, outbound, sourceId, uri.rawFragment)
+    }
+
+    private fun parseTuic(raw: String, sourceId: String): FreeVpnCandidate? {
+        val uri = URI(raw)
+        val host = uri.host ?: return null
+        val port = uri.port.takeIf { it in 1..65535 } ?: 443
+        val credentials = uri.rawUserInfo?.percentDecode().orEmpty()
+        val separator = credentials.indexOf(':')
+        if (separator <= 0 || separator >= credentials.lastIndex) return null
+        val uuid = credentials.substring(0, separator)
+        val password = credentials.substring(separator + 1)
+        if (uuid.isBlank() || password.isBlank()) return null
+        val query = query(uri.rawQuery)
+        val congestion = (query["congestion_control"] ?: query["congestion-control"])
+            ?.lowercase()
+            ?.takeIf { it in setOf("cubic", "new_reno", "bbr") }
+        val relayMode = (query["udp_relay_mode"] ?: query["udp-relay-mode"])
+            ?.lowercase()
+            ?.takeIf { it in setOf("native", "quic") }
+
+        val outbound = buildJsonObject {
+            put("type", "tuic")
+            put("tag", OUTBOUND_TAG)
+            put("server", host)
+            put("server_port", port)
+            put("uuid", uuid)
+            put("password", password)
+            congestion?.let { put("congestion_control", it) }
+            relayMode?.let { put("udp_relay_mode", it) }
+            if (query.boolean("zero_rtt_handshake") || query.boolean("zero-rtt-handshake")) {
+                put("zero_rtt_handshake", true)
+            }
+            query["heartbeat"]?.takeIf(String::isNotBlank)?.let { put("heartbeat", it) }
+            putJsonObject("tls") {
+                put("enabled", true)
+                (query["sni"] ?: query["servername"])
+                    ?.takeIf(String::isNotBlank)
+                    ?.let { put("server_name", it) }
+                query["alpn"]?.split(',')
+                    ?.map(String::trim)
+                    ?.filter(String::isNotBlank)
+                    ?.takeIf(List<String>::isNotEmpty)
+                    ?.let { values -> put("alpn", JsonArray(values.map(::JsonPrimitive))) }
+                if (
+                    query.boolean("insecure") ||
+                    query.boolean("allowInsecure") ||
+                    query.boolean("allow_insecure")
+                ) put("insecure", true)
+            }
+        }
+        return candidate(ProxyProtocol.TUIC, host, port, outbound, sourceId, uri.rawFragment)
+    }
 
     private fun parseTrojan(raw: String, sourceId: String): FreeVpnCandidate? {
         val uri = URI(raw)
@@ -318,7 +422,10 @@ object ProxyShareParser {
                     put("type", "http")
                     (query["host"] ?: query["authority"])
                         ?.takeIf(String::isNotBlank)
-                        ?.let { value -> put("host", value.split(',').map(String::trim).filter(String::isNotEmpty).joinToString(",")) }
+                        ?.let { value ->
+                            val hosts = value.split(',').map(String::trim).filter(String::isNotEmpty)
+                            if (hosts.isNotEmpty()) put("host", JsonArray(hosts.map(::JsonPrimitive)))
+                        }
                     query["path"]?.takeIf(String::isNotBlank)?.let { put("path", it) }
                 }
             )
@@ -347,7 +454,10 @@ object ProxyShareParser {
             buildJsonObject {
                 put("type", "http")
                 root.string("path").takeIf(String::isNotBlank)?.let { put("path", it) }
-                root.string("host").takeIf(String::isNotBlank)?.let { put("host", it.substringBefore(',')) }
+                root.string("host").takeIf(String::isNotBlank)?.let { host ->
+                    val hosts = host.split(',').map(String::trim).filter(String::isNotEmpty)
+                    if (hosts.isNotEmpty()) put("host", JsonArray(hosts.map(::JsonPrimitive)))
+                }
             }
         )
         "httpupgrade" -> TransportSelection(
