@@ -55,6 +55,9 @@ class VpnProfileStore(context: Context) {
         require("0.0.0.0/0" in allowed) {
             "Profile must route all IPv4 traffic through the VPN (AllowedIPs = 0.0.0.0/0)"
         }
+        require("::/0" in allowed) {
+            "Profile must capture IPv6 traffic too (AllowedIPs must include ::/0) to avoid an IPv6 leak"
+        }
     }
 
     private fun InputStream.readLimited(maxBytes: Int): ByteArray {
