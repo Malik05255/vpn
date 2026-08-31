@@ -70,8 +70,8 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
+      - name: Grant execute permission
+        run: chmod +x gradlew ci/arab-vpn-startup-smoke-test.sh
       - name: Build standalone debug APK
         run: ./gradlew --no-daemon :arabvpn:assembleDebug
       - name: Boot emulator, install and launch Arab VPN
@@ -82,16 +82,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
-          script: |
-            adb logcat -c
-            adb install -r arabvpn/build/outputs/apk/debug/arabvpn-debug.apk
-            adb shell am start -W -n com.malik05255.arabvpn/com.arabvpn.app.MainActivity
-            sleep 5
-            adb shell pidof com.malik05255.arabvpn
-            adb logcat -d -v threadtime > /tmp/arabvpn-logcat.txt
-            if grep -A80 -B20 -E "FATAL EXCEPTION|Process: com.malik05255.arabvpn" /tmp/arabvpn-logcat.txt; then echo "Fatal runtime crash detected"; exit 1; fi
-            adb shell dumpsys activity activities > /tmp/arabvpn-activities.txt
-            grep -F "com.malik05255.arabvpn" /tmp/arabvpn-activities.txt
+          script: ./ci/arab-vpn-startup-smoke-test.sh
 
   unit-tests:
     name: Arab VPN Unit Tests
