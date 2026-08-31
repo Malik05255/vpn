@@ -18,15 +18,16 @@ object ProxyShareParser {
     private val json = Json { ignoreUnknownKeys = true }
 
     fun parse(raw: String, sourceId: String): FreeVpnCandidate? = runCatching {
+        val normalized = normalizeShareLink(raw)
         when {
-            raw.startsWith("trojan://", ignoreCase = true) -> parseTrojan(raw, sourceId)
-            raw.startsWith("vless://", ignoreCase = true) -> parseVless(raw, sourceId)
-            raw.startsWith("ss://", ignoreCase = true) -> parseShadowsocks(raw, sourceId)
-            raw.startsWith("vmess://", ignoreCase = true) -> parseVmess(raw, sourceId)
-            raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true) ->
-                parseHttpProxy(raw, sourceId)
-            raw.startsWith("socks5://", ignoreCase = true) -> parseSocksProxy(raw, sourceId, version = "5")
-            raw.startsWith("socks4://", ignoreCase = true) -> parseSocksProxy(raw, sourceId, version = "4")
+            normalized.startsWith("trojan://", ignoreCase = true) -> parseTrojan(normalized, sourceId)
+            normalized.startsWith("vless://", ignoreCase = true) -> parseVless(normalized, sourceId)
+            normalized.startsWith("ss://", ignoreCase = true) -> parseShadowsocks(normalized, sourceId)
+            normalized.startsWith("vmess://", ignoreCase = true) -> parseVmess(normalized, sourceId)
+            normalized.startsWith("http://", ignoreCase = true) || normalized.startsWith("https://", ignoreCase = true) ->
+                parseHttpProxy(normalized, sourceId)
+            normalized.startsWith("socks5://", ignoreCase = true) -> parseSocksProxy(normalized, sourceId, version = "5")
+            normalized.startsWith("socks4://", ignoreCase = true) -> parseSocksProxy(normalized, sourceId, version = "4")
             else -> null
         }
     }.getOrNull()
@@ -41,7 +42,7 @@ object ProxyShareParser {
         val security = query["security"].orEmpty().lowercase()
         if (security.isNotEmpty() && security !in setOf("tls")) return null
         val sni = query["sni"] ?: query["peer"] ?: query["servername"]
-        val transport = transportJson(query) ?: return null
+        val transport = transportSelection(query) ?: return null
         val outbound = buildJsonObject {
             put("type", "trojan")
             put("tag", OUTBOUND_TAG)
@@ -53,7 +54,7 @@ object ProxyShareParser {
                 if (!sni.isNullOrBlank()) put("server_name", sni)
                 if (query.boolean("allowInsecure") || query.boolean("insecure")) put("insecure", true)
             }
-            transport?.let { put("transport", it) }
+            transport.json?.let { put("transport", it) }
         }
         return candidate(ProxyProtocol.TROJAN, host, port, outbound, sourceId, uri.rawFragment)
     }
@@ -66,9 +67,13 @@ object ProxyShareParser {
         if (uuid.isBlank()) return null
         val query = query(uri.rawQuery)
         val security = query["security"].orEmpty().lowercase()
-        if (security == "reality") return null // fail closed; don't silently miscompile Reality options.
-        if (security !in setOf("", "none", "false", "tls")) return null
-        val transport = transportJson(query) ?: return null
+        if (security !in setOf("", "none", "false", "tls", "reality")) return null
+        val transport = transportSelection(query) ?: return null
+
+        if (transport.json == null && !legacyTcpHeaderSupported(query["headerType"] ?: query["header_type"])) {
+            return null
+        }
+
         val outbound = buildJsonObject {
             put("type", "vless")
             put("tag", OUTBOUND_TAG)
@@ -76,18 +81,52 @@ object ProxyShareParser {
             put("server_port", port)
             put("uuid", uuid)
             query["flow"]?.takeIf(String::isNotBlank)?.let { put("flow", it) }
-            if (security == "tls") {
-                putJsonObject("tls") {
+
+            when (security) {
+                "tls" -> putJsonObject("tls") {
                     put("enabled", true)
                     (query["sni"] ?: query["servername"])
                         ?.takeIf(String::isNotBlank)
                         ?.let { put("server_name", it) }
+                    addUtlsIfPresent(query)
                     if (query.boolean("allowInsecure") || query.boolean("insecure")) put("insecure", true)
                 }
+
+                "reality" -> {
+                    val publicKey = (query["pbk"] ?: query["public_key"] ?: query["publicKey"])
+                        ?.takeIf(String::isNotBlank)
+                        ?: return null
+                    val shortId = (query["sid"] ?: query["short_id"] ?: query["shortId"])
+                        ?.takeIf(String::isNotBlank)
+                    putJsonObject("tls") {
+                        put("enabled", true)
+                        (query["sni"] ?: query["servername"] ?: query["serverName"])
+                            ?.takeIf(String::isNotBlank)
+                            ?.let { put("server_name", it) }
+                        addUtlsIfPresent(query)
+                        putJsonObject("reality") {
+                            put("enabled", true)
+                            put("public_key", publicKey)
+                            shortId?.let { put("short_id", it) }
+                        }
+                    }
+                }
             }
-            transport?.let { put("transport", it) }
+
+            transport.json?.let { put("transport", it) }
         }
         return candidate(ProxyProtocol.VLESS, host, port, outbound, sourceId, uri.rawFragment)
+    }
+
+    private fun kotlinx.serialization.json.JsonObjectBuilder.addUtlsIfPresent(query: Map<String, String>) {
+        val fingerprint = (query["fp"] ?: query["fingerprint"])
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && !it.equals("randomized", ignoreCase = true) && !it.equals("random", ignoreCase = true) }
+            ?: return
+        putJsonObject("utls") {
+            put("enabled", true)
+            put("fingerprint", fingerprint)
+        }
     }
 
     private fun parseShadowsocks(raw: String, sourceId: String): FreeVpnCandidate? {
@@ -99,12 +138,10 @@ object ProxyShareParser {
         var port = uri.port
         var credentials = uri.rawUserInfo?.percentDecode()
 
-        // SIP002 allows user-info to be URL-safe base64(method:password).
         if (!credentials.isNullOrBlank() && ':' !in credentials) {
             credentials = decodeBase64(credentials)
         }
 
-        // Legacy form: ss://BASE64(method:password@host:port)
         if (host == null || port !in 1..65535 || credentials.isNullOrBlank()) {
             val payload = raw.substringAfter("://").substringBefore('#').substringBefore('?')
             val decoded = decodeBase64(payload) ?: return null
@@ -147,9 +184,12 @@ object ProxyShareParser {
         if (host.isBlank() || port !in 1..65535 || uuid.isBlank()) return null
         val network = objectValue.string("net").lowercase()
         val tlsValue = objectValue.string("tls").lowercase()
-        val security = objectValue.string("scy").ifBlank { "auto" }
+        val security = objectValue.string("scy").ifBlank { objectValue.string("security") }.ifBlank { "auto" }
         val alterId = objectValue.string("aid").toIntOrNull() ?: 0
         val transport = vmessTransport(objectValue, network) ?: return null
+
+        if (transport.json == null && !legacyTcpHeaderSupported(objectValue.string("type"))) return null
+
         val outbound = buildJsonObject {
             put("type", "vmess")
             put("tag", OUTBOUND_TAG)
@@ -164,9 +204,19 @@ object ProxyShareParser {
                     objectValue.string("sni").ifBlank { objectValue.string("host") }
                         .takeIf(String::isNotBlank)
                         ?.let { put("server_name", it.substringBefore(',')) }
+                    val fingerprint = objectValue.string("fp")
+                    if (fingerprint.isNotBlank() && !fingerprint.equals("randomized", ignoreCase = true)) {
+                        putJsonObject("utls") {
+                            put("enabled", true)
+                            put("fingerprint", fingerprint)
+                        }
+                    }
+                    if (objectValue.string("skip-cert-verify").equals("true", ignoreCase = true)) {
+                        put("insecure", true)
+                    }
                 }
             }
-            transport?.let { put("transport", it) }
+            transport.json?.let { put("transport", it) }
         }
         val name = objectValue.string("ps")
         return FreeVpnCandidate(
@@ -179,11 +229,6 @@ object ProxyShareParser {
         )
     }
 
-    /**
-     * Public country feeds frequently expose HTTP CONNECT endpoints instead of V2Ray links.
-     * These are used only as a last-resort transport and still have to pass the same post-connect
-     * country and quality verification as every other candidate.
-     */
     private fun parseHttpProxy(raw: String, sourceId: String): FreeVpnCandidate? {
         val uri = URI(raw)
         val host = uri.host ?: return null
@@ -231,64 +276,95 @@ object ProxyShareParser {
         return candidate(protocol, host, port, outbound, sourceId, uri.rawFragment)
     }
 
-    /** null return means unsupported; JsonObject? inside Result semantics allows TCP/no transport. */
-    private fun transportJson(query: Map<String, String>): JsonObject? {
+    /**
+     * `json == null` means a valid raw TCP transport and therefore the `transport` field MUST be
+     * omitted entirely. Returning `{}` here is invalid in sing-box 1.14 because a present V2Ray
+     * transport object requires a concrete `type`.
+     */
+    private data class TransportSelection(val json: JsonObject?)
+
+    private fun transportSelection(query: Map<String, String>): TransportSelection? {
         val type = query["type"].orEmpty().lowercase().ifBlank { "tcp" }
         return when (type) {
-            "tcp", "raw" -> JsonObject(emptyMap())
-            "ws", "websocket" -> buildJsonObject {
-                put("type", "ws")
-                query["path"]?.takeIf(String::isNotBlank)?.let { put("path", it) }
-                (query["host"] ?: query["authority"])
-                    ?.takeIf(String::isNotBlank)
-                    ?.let { host ->
-                        putJsonObject("headers") { put("Host", host) }
-                    }
-            }
-            "httpupgrade", "http-upgrade", "http_upgrade" -> buildJsonObject {
-                put("type", "httpupgrade")
-                query["path"]?.takeIf(String::isNotBlank)?.let { put("path", it) }
-                (query["host"] ?: query["authority"])
-                    ?.takeIf(String::isNotBlank)
-                    ?.let { put("host", it) }
-            }
-            "grpc" -> buildJsonObject {
-                put("type", "grpc")
-                (query["serviceName"] ?: query["service_name"] ?: query["path"]?.trimStart('/'))
-                    ?.takeIf(String::isNotBlank)
-                    ?.let { put("service_name", it) }
-            }
-            "http", "h2", "http2" -> buildJsonObject {
-                put("type", "http")
-                (query["host"] ?: query["authority"])
-                    ?.takeIf(String::isNotBlank)
-                    ?.let { value -> put("host", value.split(',').map(String::trim).filter(String::isNotEmpty).joinToString(",")) }
-                query["path"]?.takeIf(String::isNotBlank)?.let { put("path", it) }
-            }
-            else -> return null
+            "tcp", "raw" -> TransportSelection(null)
+            "ws", "websocket" -> TransportSelection(
+                buildJsonObject {
+                    put("type", "ws")
+                    query["path"]?.takeIf(String::isNotBlank)?.let { put("path", it) }
+                    (query["host"] ?: query["authority"])
+                        ?.takeIf(String::isNotBlank)
+                        ?.let { host -> putJsonObject("headers") { put("Host", host) } }
+                }
+            )
+            "httpupgrade", "http-upgrade", "http_upgrade" -> TransportSelection(
+                buildJsonObject {
+                    put("type", "httpupgrade")
+                    query["path"]?.takeIf(String::isNotBlank)?.let { put("path", it) }
+                    (query["host"] ?: query["authority"])
+                        ?.takeIf(String::isNotBlank)
+                        ?.let { put("host", it) }
+                }
+            )
+            "grpc" -> TransportSelection(
+                buildJsonObject {
+                    put("type", "grpc")
+                    (query["serviceName"] ?: query["service_name"] ?: query["path"]?.trimStart('/'))
+                        ?.takeIf(String::isNotBlank)
+                        ?.let { put("service_name", it) }
+                }
+            )
+            "http", "h2", "http2" -> TransportSelection(
+                buildJsonObject {
+                    put("type", "http")
+                    (query["host"] ?: query["authority"])
+                        ?.takeIf(String::isNotBlank)
+                        ?.let { value -> put("host", value.split(',').map(String::trim).filter(String::isNotEmpty).joinToString(",")) }
+                    query["path"]?.takeIf(String::isNotBlank)?.let { put("path", it) }
+                }
+            )
+            else -> null
         }
     }
 
-    private fun vmessTransport(root: JsonObject, network: String): JsonObject? = when (network.ifBlank { "tcp" }) {
-        "tcp", "raw" -> JsonObject(emptyMap())
-        "ws" -> buildJsonObject {
-            put("type", "ws")
-            root.string("path").takeIf(String::isNotBlank)?.let { put("path", it) }
-            root.string("host").takeIf(String::isNotBlank)?.let { host ->
-                putJsonObject("headers") { put("Host", host.substringBefore(',')) }
+    private fun vmessTransport(root: JsonObject, network: String): TransportSelection? = when (network.ifBlank { "tcp" }) {
+        "tcp", "raw" -> TransportSelection(null)
+        "ws" -> TransportSelection(
+            buildJsonObject {
+                put("type", "ws")
+                root.string("path").takeIf(String::isNotBlank)?.let { put("path", it) }
+                root.string("host").takeIf(String::isNotBlank)?.let { host ->
+                    putJsonObject("headers") { put("Host", host.substringBefore(',')) }
+                }
             }
-        }
-        "grpc" -> buildJsonObject {
-            put("type", "grpc")
-            root.string("path").trimStart('/').takeIf(String::isNotBlank)?.let { put("service_name", it) }
-        }
-        "http", "h2" -> buildJsonObject {
-            put("type", "http")
-            root.string("path").takeIf(String::isNotBlank)?.let { put("path", it) }
-            root.string("host").takeIf(String::isNotBlank)?.let { put("host", it.substringBefore(',')) }
-        }
+        )
+        "grpc" -> TransportSelection(
+            buildJsonObject {
+                put("type", "grpc")
+                root.string("path").trimStart('/').takeIf(String::isNotBlank)?.let { put("service_name", it) }
+            }
+        )
+        "http", "h2" -> TransportSelection(
+            buildJsonObject {
+                put("type", "http")
+                root.string("path").takeIf(String::isNotBlank)?.let { put("path", it) }
+                root.string("host").takeIf(String::isNotBlank)?.let { put("host", it.substringBefore(',')) }
+            }
+        )
+        "httpupgrade" -> TransportSelection(
+            buildJsonObject {
+                put("type", "httpupgrade")
+                root.string("path").takeIf(String::isNotBlank)?.let { put("path", it) }
+                root.string("host").takeIf(String::isNotBlank)?.let { put("host", it.substringBefore(',')) }
+            }
+        )
         else -> null
     }
+
+    private fun legacyTcpHeaderSupported(value: String?): Boolean = value
+        .orEmpty()
+        .trim()
+        .lowercase()
+        .let { it.isBlank() || it in setOf("none", "auto", "---") }
 
     private fun candidate(
         protocol: ProxyProtocol,
@@ -326,6 +402,11 @@ object ProxyShareParser {
         ?.jsonPrimitive
         ?.contentOrNull
         .orEmpty()
+
+    private fun normalizeShareLink(raw: String): String = raw
+        .trim()
+        .replace("&amp;", "&", ignoreCase = true)
+        .replace("&#38;", "&", ignoreCase = true)
 
     private fun String.percentDecode(): String = URLDecoder.decode(
         replace("+", "%2B"),
