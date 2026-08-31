@@ -37,7 +37,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "VibeApp"
+rootProject.name = "ArabVPN"
 include(":app")
 include(":build-engine")
 include(":build-tools:android-common-resources")
