@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets
  */
 class AutomaticVpnManager(context: Context) {
     private val appContext = context.applicationContext
+    private val realExitCatalog = LiveCountryProxyCatalog()
     private val catalog = FreeVpnCatalog()
     private val qualityClient = ConnectionQualityClient()
     private val runtimeDir = File(appContext.filesDir, "vpn-runtime").apply { mkdirs() }
@@ -36,17 +37,34 @@ class AutomaticVpnManager(context: Context) {
         VpnDiagnostics.reset(appContext, country)
         VpnDiagnostics.record(appContext, "discovery.start", "country=${country.code}")
 
-        onProgress("جاري جمع واختبار المسارات المجانية في ${country.displayNameAr}…")
-        val discovered = runCatching { catalog.discover(country) }
-            .onFailure { error ->
-                VpnDiagnostics.record(appContext, "discovery.failed", error.userMessage())
-            }
-            .getOrThrow()
+        onProgress("جاري اختبار خوادم ${country.displayNameAr} والتحقق من IP الخروج فعلياً…")
 
-        // Defence in depth: the catalog already performs endpoint geolocation, but the connection
-        // boundary independently refuses anything that did not survive that verification. This
-        // prevents a future source/parser regression from ever reaching libbox as an untrusted
-        // country-labelled candidate.
+        val realExitCandidates = runCatching { realExitCatalog.discover(country) }
+            .onFailure { error ->
+                VpnDiagnostics.record(appContext, "real_exit.discovery_failed", error.userMessage())
+            }
+            .getOrDefault(emptyList())
+
+        VpnDiagnostics.record(
+            appContext,
+            "real_exit.ready",
+            "verified=${realExitCandidates.size}",
+        )
+
+        // The primary path proves the country by making two external HTTPS requests THROUGH the
+        // proxy before sing-box starts. Only when the volatile public pool has no such relay do we
+        // fall back to the older endpoint-geo catalog, which still has final post-tunnel checking.
+        val discovered = if (realExitCandidates.isNotEmpty()) {
+            realExitCandidates
+        } else {
+            onProgress("لم نجد بروكسي خروج مؤكداً مباشرة؛ نجرب المسار الاحتياطي الموثق…")
+            runCatching { catalog.discover(country) }
+                .onFailure { error ->
+                    VpnDiagnostics.record(appContext, "fallback.discovery_failed", error.userMessage())
+                }
+                .getOrDefault(emptyList())
+        }
+
         val candidates = discovered.filter { candidate ->
             val verified = candidate.countryEvidence == CountryEvidence.ENDPOINT_GEO_VERIFIED
             if (!verified) {
@@ -76,11 +94,16 @@ class AutomaticVpnManager(context: Context) {
         VpnDiagnostics.record(
             appContext,
             "discovery.ready",
-            "discovered=${discovered.size}; verified=${candidates.size}; protocols=$protocolSummary; sources=$sourceSummary",
+            "real_exit=${realExitCandidates.size}; discovered=${discovered.size}; verified=${candidates.size}; protocols=$protocolSummary; sources=$sourceSummary",
         )
 
         if (candidates.isNotEmpty()) {
-            onProgress("وجدنا ${candidates.size} مسارات حية وموثقة جغرافياً؛ نتحقق من دولة الخروج فعلياً…")
+            val message = if (realExitCandidates.isNotEmpty()) {
+                "وجدنا ${candidates.size} خوادم ثبت خروجها من ${country.displayNameAr} قبل تشغيل VPN؛ نبدأ النفق…"
+            } else {
+                "وجدنا ${candidates.size} مسارات احتياطية موثقة؛ نتحقق من دولة الخروج بعد تشغيل VPN…"
+            }
+            onProgress(message)
         }
 
         candidates.forEachIndexed { index, candidate ->
@@ -144,14 +167,14 @@ class AutomaticVpnManager(context: Context) {
         VpnDiagnostics.record(
             appContext,
             "connection.exhausted",
-            "discovered=${discovered.size}; verified=${candidates.size}; attempted=${failures.size}",
+            "real_exit=${realExitCandidates.size}; discovered=${discovered.size}; verified=${candidates.size}; attempted=${failures.size}",
         )
         throw IllegalStateException(
             buildString {
                 if (candidates.isEmpty()) {
-                    append("لا يوجد حالياً خادم مجاني حي وموثّق في ${country.displayNameAr}. لم نشغّل أي عقدة غير مؤكدة حتى لا يحدث اتصال خاطئ أو كراش.")
+                    append("لا يوجد حالياً خادم مجاني حي يثبت خروجاً حقيقياً من ${country.displayNameAr}. لم نشغّل عقدة غير مؤكدة حتى لا نعطيك اتصالاً وهمياً أو نسبب كراش.")
                 } else {
-                    append("اختبرنا ${candidates.size} خوادم موثقة جغرافياً في ${country.displayNameAr}، لكن لم يثبت أي منها عنوان خروج صالحاً بعد تشغيل النفق.")
+                    append("وجدنا ${candidates.size} خوادم مرشحة لـ${country.displayNameAr}، لكن النفق الكامل لم يثبت خروجاً صالحاً على جهازك.")
                 }
                 if (recent.isNotEmpty()) {
                     append(" آخر النتائج: ")
@@ -195,7 +218,7 @@ class AutomaticVpnManager(context: Context) {
         ?: javaClass.simpleName.ifBlank { "فشل غير معروف" }
 
     companion object {
-        private const val TUNNEL_SETTLE_MS = 1_600L
+        private const val TUNNEL_SETTLE_MS = 1_800L
         private const val BETWEEN_ATTEMPTS_MS = 250L
         private const val ATTEMPT_TIMEOUT_MS = 25_000L
         private const val MAX_CONFIG_BYTES = 512 * 1024
