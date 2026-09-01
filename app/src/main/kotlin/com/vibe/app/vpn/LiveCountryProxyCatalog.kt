@@ -132,10 +132,22 @@ internal class LiveCountryProxyCatalog {
         val hproxy = "https://hproxy.com/api/proxy-list?format=txt&country=$upper&limit=100"
 
         return listOf(
+            // HProxy's `https` label means an HTTP proxy that can tunnel HTTPS via CONNECT. We
+            // intentionally normalize it to http:// because the proxy hop itself is plaintext HTTP.
             Source(
-                id = "real-exit-proxyscrape-http",
-                url = "$proxyScrape&protocol=http",
+                id = "real-exit-hproxy-https-capable",
+                url = "$hproxy&protocol=https",
                 prefix = "http://",
+            ),
+            Source(
+                id = "real-exit-proxyscrape-https-capable",
+                url = "$proxyScrape&protocol=http&ssl=yes",
+                prefix = "http://",
+            ),
+            Source(
+                id = "real-exit-hproxy-socks5",
+                url = "$hproxy&protocol=socks5",
+                prefix = "socks5://",
             ),
             Source(
                 id = "real-exit-proxyscrape-socks5",
@@ -148,9 +160,9 @@ internal class LiveCountryProxyCatalog {
                 prefix = "http://",
             ),
             Source(
-                id = "real-exit-hproxy-socks5",
-                url = "$hproxy&protocol=socks5",
-                prefix = "socks5://",
+                id = "real-exit-proxyscrape-http",
+                url = "$proxyScrape&protocol=http",
+                prefix = "http://",
             ),
             Source(
                 id = "real-exit-socks5proxies",
@@ -259,7 +271,7 @@ internal class LiveCountryProxyCatalog {
         const val MAX_RESPONSE_CHARS = 8_192
         const val MAX_PER_SOURCE = 100
         const val MAX_RAW_CANDIDATES = 180
-        const val MAX_VERIFY_CONCURRENCY = 14
+        const val MAX_VERIFY_CONCURRENCY = 12
         const val MAX_RESULTS = 16
 
         val COUNTRY_IS_REGEX = Regex("\\\"country\\\"\\s*:\\s*\\\"([A-Za-z]{2})\\\"")
