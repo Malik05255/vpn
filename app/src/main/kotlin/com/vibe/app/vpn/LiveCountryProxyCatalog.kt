@@ -127,7 +127,7 @@ internal class LiveCountryProxyCatalog {
         val upper = country.code.uppercase()
         val lower = country.code.lowercase()
         val proxyScrape =
-            "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies" +
+            "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies" +
                 "&proxy_format=protocolipport&format=text&country=$lower&timeout=10000"
         val hproxy = "https://hproxy.com/api/proxy-list?format=txt&country=$upper&limit=100"
 
