@@ -28,13 +28,14 @@ class PeachMcpLoopbackServer @Inject constructor() {
     fun start(): String {
         stop()
 
+        // Bind explicitly to IPv4 loopback. Some Android builds resolve "localhost" to IPv6
+        // first, while the browser later reaches 127.0.0.1. The OAuth redirect URI itself stays
+        // as http://localhost:<port>/... because that is the form Peach accepts for native apps.
+        val loopback = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
         val socket = ServerSocket().apply {
             reuseAddress = true
             soTimeout = CALLBACK_TIMEOUT_MILLIS
-            bind(
-                InetSocketAddress(InetAddress.getByName("localhost"), 0),
-                1,
-            )
+            bind(InetSocketAddress(loopback, 0), 1)
         }
         synchronized(lock) {
             activeSocket = socket
