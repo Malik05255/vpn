@@ -7,6 +7,7 @@ import com.malik.lmai.feature.mcp.PeachMcpOAuthCallbackBus
 import com.malik.lmai.feature.mcp.PeachMcpOAuthCoordinator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -50,7 +51,7 @@ class PeachMcpSettingsViewModel @Inject constructor(
                     mutableState.value = mutableState.value.copy(
                         connected = oauth.isConnected(),
                         busy = false,
-                        error = result.exceptionOrNull()?.message ?: "Peach authorization failed",
+                        error = describeError(result.exceptionOrNull(), "Peach authorization failed"),
                     )
                 }
             }
@@ -59,7 +60,7 @@ class PeachMcpSettingsViewModel @Inject constructor(
 
     fun connect() {
         if (mutableState.value.busy) return
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             mutableState.value = mutableState.value.copy(busy = true, error = null, message = null)
             val result = oauth.begin()
             val url = result.getOrNull()
@@ -69,7 +70,7 @@ class PeachMcpSettingsViewModel @Inject constructor(
             } else {
                 mutableState.value = mutableState.value.copy(
                     busy = false,
-                    error = result.exceptionOrNull()?.message ?: "Could not start Peach authorization",
+                    error = describeError(result.exceptionOrNull(), "Could not start Peach authorization"),
                 )
             }
         }
@@ -91,7 +92,7 @@ class PeachMcpSettingsViewModel @Inject constructor(
                 mutableState.value = mutableState.value.copy(
                     connected = oauth.isConnected(),
                     busy = false,
-                    error = result.exceptionOrNull()?.message ?: "Peach connection test failed",
+                    error = describeError(result.exceptionOrNull(), "Peach connection test failed"),
                 )
             }
         }
@@ -101,5 +102,15 @@ class PeachMcpSettingsViewModel @Inject constructor(
         oauth.disconnect()
         client.resetSession()
         mutableState.value = UiState(connected = false, message = "Peach disconnected")
+    }
+
+    private fun describeError(error: Throwable?, fallback: String): String {
+        if (error == null) return fallback
+        val message = error.message?.trim().orEmpty()
+        return if (message.isNotEmpty()) {
+            "$message [${error::class.java.simpleName}]"
+        } else {
+            "$fallback [${error::class.java.simpleName}]"
+        }
     }
 }
