@@ -1,0 +1,151 @@
+name: Deploy H Supabase Runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      function:
+        description: H Supabase function to deploy
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - h-openrouter-oauth
+          - h-provider-config
+          - h-tavily-config
+          - h-whatsapp-action
+          - h-whatsapp-inbox
+          - h-whatsapp-peach
+  push:
+    branches: [ "main" ]
+    paths:
+      - "cloud/supabase/**"
+      - ".github/workflows/h-supabase-runtime-deploy.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h-supabase-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+      TARGET_FUNCTION: ${{ inputs.function }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Check Supabase deployment configuration
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_REF; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            printf 'H Supabase deployment is not configured. Missing GitHub Actions secrets: %s\n' "${missing[*]}"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "H Supabase deployment configuration is present."
+          fi
+
+      - name: Setup Supabase CLI
+        if: steps.preflight.outputs.ready == 'true'
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Validate deployment target
+        if: steps.preflight.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${TARGET_FUNCTION:-all}"
+          allowed=(
+            all
+            h-openrouter-oauth
+            h-provider-config
+            h-tavily-config
+            h-whatsapp-action
+            h-whatsapp-inbox
+            h-whatsapp-peach
+          )
+
+          valid=false
+          for item in "${allowed[@]}"; do
+            if [ "$target" = "$item" ]; then
+              valid=true
+              break
+            fi
+          done
+
+          if [ "$valid" != "true" ]; then
+            echo "Unsupported H Supabase function: $target" >&2
+            exit 1
+          fi
+
+          if [ "$target" != "all" ] && [ ! -f "cloud/supabase/$target/index.ts" ]; then
+            echo "Function source is missing: cloud/supabase/$target/index.ts" >&2
+            exit 1
+          fi
+
+      - name: Deploy H Supabase function(s)
+        if: steps.preflight.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${TARGET_FUNCTION:-all}"
+          functions=(
+            h-openrouter-oauth
+            h-provider-config
+            h-tavily-config
+            h-whatsapp-action
+            h-whatsapp-inbox
+            h-whatsapp-peach
+          )
+
+          if [ "$target" != "all" ]; then
+            functions=("$target")
+          fi
+
+          for fn in "${functions[@]}"; do
+            echo "Deploying $fn"
+            supabase functions deploy "$fn" \
+              --project-ref "$SUPABASE_PROJECT_REF" \
+              --no-verify-jwt
+          done
+
+      - name: Report missing deployment configuration
+        if: steps.preflight.outputs.ready != 'true'
+        shell: bash
+        run: |
+          echo "::warning::H Supabase deployment was skipped because SUPABASE_ACCESS_TOKEN and/or SUPABASE_PROJECT_REF are not configured as repository secrets."
+          echo "No secret is stored in the repository or APK."
+
+      - name: Write deployment summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## H Supabase Runtime"
+            echo
+            if [ "${{ steps.preflight.outputs.ready }}" = "true" ]; then
+              echo "Deployment target: \`${TARGET_FUNCTION:-all}\`"
+              echo "Supabase project ref is supplied only through GitHub Actions secrets."
+              echo "H functions keep their existing application-level authentication and are deployed with Supabase JWT verification disabled so OAuth callbacks and custom runtime-secret flows are not blocked at the gateway."
+            else
+              echo "Deployment skipped safely: configure \`SUPABASE_ACCESS_TOKEN\` and \`SUPABASE_PROJECT_REF\` as GitHub Actions secrets."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
