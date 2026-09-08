@@ -2,8 +2,8 @@ package com.malik.lmai.feature.reminder
 
 import android.content.Context
 import com.malik.lmai.feature.assistant.HOwnerIdentity
-import com.malik.lmai.feature.assistant.HOwnerScope
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -86,7 +86,16 @@ class HLocationScopeStore @Inject constructor(
         nowMs: Long = System.currentTimeMillis(),
     ): HLocationScopeDecision = HLocationScopePolicy.evaluateCurrentPosition(load(nowMs), current, nowMs)
 
-    private fun prefix(): String = "${HOwnerScope.storageKey(ownerIdentity.currentOwnerKey())}_"
+    /**
+     * Keep settings isolated per H owner without exposing account identifiers in preference keys.
+     * SHA-256 is used only as a deterministic storage namespace, not as authentication.
+     */
+    private fun prefix(): String {
+        val ownerKey = ownerIdentity.currentOwnerKey()
+        val digest = MessageDigest.getInstance("SHA-256").digest(ownerKey.toByteArray(Charsets.UTF_8))
+        val namespace = digest.take(12).joinToString("") { "%02x".format(it) }
+        return "owner_${namespace}_"
+    }
 
     private fun readPoint(prefix: String, kind: String): HGeoPoint? {
         val latKey = "${prefix}${kind}_lat"
