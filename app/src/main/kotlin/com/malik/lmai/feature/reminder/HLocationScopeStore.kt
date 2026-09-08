@@ -59,28 +59,29 @@ class HLocationScopeStore @Inject constructor(
 
     private fun save(value: HLocationScope) {
         val prefix = prefix()
-        preferences.edit()
+        val editor = preferences.edit()
             .putBoolean("${prefix}_enabled", value.enabled)
-            .putLong("${prefix}_lat", value.anchorLatitude?.toRawBits() ?: MISSING_DOUBLE_BITS)
-            .putLong("${prefix}_lng", value.anchorLongitude?.toRawBits() ?: MISSING_DOUBLE_BITS)
             .putString("${prefix}_label", value.anchorLabel)
-            .putLong("${prefix}_radius", value.radiusKm.toRawBits())
+            .putString("${prefix}_radius", value.radiusKm.toString())
             .putLong("${prefix}_updated", value.updatedAtMs)
-            .apply()
+        if (value.anchorLatitude != null) editor.putString("${prefix}_lat", value.anchorLatitude.toString())
+        else editor.remove("${prefix}_lat")
+        if (value.anchorLongitude != null) editor.putString("${prefix}_lng", value.anchorLongitude.toString())
+        else editor.remove("${prefix}_lng")
+        editor.apply()
         mutableScope.value = value
     }
 
     private fun load(): HLocationScope {
         val prefix = prefix()
-        val latBits = preferences.getLong("${prefix}_lat", MISSING_DOUBLE_BITS)
-        val lngBits = preferences.getLong("${prefix}_lng", MISSING_DOUBLE_BITS)
-        val radiusBits = preferences.getLong("${prefix}_radius", HLocationScope.DEFAULT_RADIUS_KM.toRawBits())
+        val radius = preferences.getString("${prefix}_radius", null)?.toDoubleOrNull()
+            ?: HLocationScope.DEFAULT_RADIUS_KM
         return HLocationScope(
             enabled = preferences.getBoolean("${prefix}_enabled", false),
-            anchorLatitude = latBits.takeUnless { it == MISSING_DOUBLE_BITS }?.let(Double::fromBits),
-            anchorLongitude = lngBits.takeUnless { it == MISSING_DOUBLE_BITS }?.let(Double::fromBits),
+            anchorLatitude = preferences.getString("${prefix}_lat", null)?.toDoubleOrNull(),
+            anchorLongitude = preferences.getString("${prefix}_lng", null)?.toDoubleOrNull(),
             anchorLabel = preferences.getString("${prefix}_label", null),
-            radiusKm = HLocationScopePolicy.normalizedRadiusKm(Double.fromBits(radiusBits)),
+            radiusKm = HLocationScopePolicy.normalizedRadiusKm(radius),
             updatedAtMs = preferences.getLong("${prefix}_updated", 0L),
         )
     }
@@ -91,6 +92,5 @@ class HLocationScopeStore @Inject constructor(
 
     companion object {
         private const val PREFS_NAME = "h_location_search_scope_v1"
-        private const val MISSING_DOUBLE_BITS = Long.MIN_VALUE
     }
 }
