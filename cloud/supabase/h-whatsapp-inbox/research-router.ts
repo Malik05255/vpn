@@ -8,6 +8,11 @@ import {
   type ResearchIntent,
 } from "./research-engine.ts";
 import {
+  isRouteAwarePlaceDiscovery,
+  prepareRoutePlacesResearch,
+  type RoutePlacesResearchResult,
+} from "./route-places-engine.ts";
+import {
   prepareVerifiedRouteResearch,
   type RouteResearchResult,
 } from "./route-engine.ts";
@@ -17,13 +22,13 @@ export type { Evidence, ResearchIntent };
 
 export type ResearchBundle = BaseResearchBundle & {
   routeResearch?: RouteResearchResult;
+  routePlacesResearch?: RoutePlacesResearchResult;
 };
 
 /**
  * Compatibility facade for callers that still import the historical router path.
- * The strict research engine remains the source of truth for web/local research,
- * while verified route requests are intercepted here before any model can guess
- * distance or duration from memory.
+ * Web/local research remains in research-engine.ts. Dedicated route and route+places
+ * paths are intercepted here so the model never has to invent geometry.
  */
 export async function prepareResearchBundle(
   db: any,
@@ -31,31 +36,44 @@ export async function prepareResearchBundle(
 ): Promise<ResearchBundle> {
   const query = latestUserMessage(messages);
 
-  // Route-aware place discovery (for example: "restaurant on the route from A to B")
-  // is not the same as a direct route request. Keep it in local-place research until
-  // the route+places geometry layer is implemented, and explicitly forbid an on-route
-  // claim unless route geometry has actually been verified.
   if (isRouteAwarePlaceDiscovery(query)) {
-    const normalized = normalizeRouteAwarePlaceQuery(query);
-    const prepared = await prepareBaseResearchBundle(db, replaceLatestUserMessage(messages, normalized));
-    const restoredMessages = replaceLatestUserMessage(prepared.messages, query);
-    return {
-      ...prepared,
-      query,
-      messages: insertSystemContext(restoredMessages, [
-        "H_ROUTE_AWARE_PLACE_POLICY",
-        `Original request: ${query}`,
-        "This is a place-discovery request with a route/on-the-way constraint.",
-        "The current place search may verify the business, requested dish/service and location evidence.",
-        "Do NOT claim that a place is literally on the route, the fastest detour, or a specific detour distance/time unless route geometry was computed for that exact candidate.",
-        "If route geometry is unavailable, say that the place match is verified but the on-route/detour condition is not yet verified.",
-      ].join("\n")),
-      hardConstraints: uniqueStrings([
-        ...prepared.hardConstraints,
-        "route_aware_place_request=true",
-        "on_route_claim_requires_verified_geometry=true",
-      ]),
-    };
+    const routePlaces = await prepareRoutePlacesResearch(db, query);
+    if (routePlaces) {
+      const terminalWithoutGeneralSearch = routePlaces.status === "missing_endpoints" || routePlaces.status === "no_candidates";
+      if (terminalWithoutGeneralSearch) {
+        return {
+          active: true,
+          intent: "local_places",
+          query,
+          messages: insertSystemContext(messages, routePlaces.context),
+          evidence: [],
+          providerTrace: routePlaces.providerTrace,
+          hardConstraints: routePlaces.hardConstraints,
+          priority: routePlaces.priority,
+          routePlacesResearch: routePlaces,
+        };
+      }
+
+      // The route engine verifies geometry/corridor proximity. The normal research engine
+      // separately gathers menu/service evidence so a route match cannot silently become
+      // a claim that the place offers the requested dish/service.
+      const prepared = await prepareBaseResearchBundle(
+        db,
+        replaceLatestUserMessage(messages, routePlaces.placeSearchQuery),
+      );
+      const restoredMessages = replaceLatestUserMessage(prepared.messages, query);
+      return {
+        ...prepared,
+        active: true,
+        intent: "local_places",
+        query,
+        messages: insertSystemContext(restoredMessages, routePlaces.context),
+        providerTrace: uniqueStrings([...routePlaces.providerTrace, ...prepared.providerTrace]),
+        hardConstraints: uniqueStrings([...routePlaces.hardConstraints, ...prepared.hardConstraints]),
+        priority: routePlaces.priority,
+        routePlacesResearch: routePlaces,
+      };
+    }
   }
 
   const routeResearch = await prepareVerifiedRouteResearch(db, messages);
@@ -80,6 +98,41 @@ export function buildVerifierMessages(
   bundle: ResearchBundle,
   candidateDecisionJson: string,
 ): Array<Record<string, string>> {
+  if (bundle.routePlacesResearch) {
+    const base = buildBaseVerifierMessages(bundle, candidateDecisionJson);
+    const routePlaces = bundle.routePlacesResearch;
+    return base.map((message, index) => {
+      if (index === 0) {
+        return {
+          ...message,
+          content: [
+            message.content,
+            "",
+            "ROUTE+PLACES VERIFIER RULES:",
+            "- Treat H_VERIFIED_ROUTE_PLACES_CONTEXT as provider-backed route/corridor evidence.",
+            "- corridor_distance is geometric distance from the candidate coordinate to the verified route line, not driving detour distance/time.",
+            "- Never claim exact detour time/distance, fastest stop, traffic impact or road access unless separately verified.",
+            "- If mandatory_place_need exists, the exact place must have explicit provider/menu/web evidence for that need before you state it offers the dish/service.",
+            "- When route status is missing/unavailable, preserve useful independent place evidence but clearly mark the route constraint unverified.",
+          ].join("\n"),
+        };
+      }
+      if (index === 1) {
+        return {
+          ...message,
+          content: [
+            message.content,
+            "",
+            `Route+places status: ${routePlaces.status}`,
+            "VERIFIED ROUTE+PLACES CONTEXT:",
+            routePlaces.context,
+          ].join("\n"),
+        };
+      }
+      return message;
+    });
+  }
+
   if (!bundle.routeResearch) return buildBaseVerifierMessages(bundle, candidateDecisionJson);
 
   const route = bundle.routeResearch;
@@ -132,26 +185,6 @@ export function buildVerifierMessages(
       ].join("\n"),
     },
   ];
-}
-
-function isRouteAwarePlaceDiscovery(text: string): boolean {
-  const q = String(text || "");
-  const place = /(مطعم|مطاعم|فندق|فنادق|مقهى|كوفي|كافيه|صيدلية|مستشفى|محطة|سوبرماركت|بقالة|restaurant|hotel|cafe|pharmacy|hospital|places?)/iu.test(q);
-  const route = /(طريق\s*(?:من|الى|إلى)|مسار|في\s+طريقي|على\s+طريقي|في\s+الطريق|على\s+الطريق|on\s+the\s+(?:way|route)|along\s+the\s+route|route\s+from)/iu.test(q);
-  return place && route;
-}
-
-function normalizeRouteAwarePlaceQuery(text: string): string {
-  return String(text || "")
-    .replace(/طريق\s+(?:من\s+)?/giu, "قرب ")
-    .replace(/مسار/giu, "منطقة")
-    .replace(/(?:في|على)\s+طريقي/giu, "قريب مني")
-    .replace(/(?:في|على)\s+الطريق/giu, "قريب")
-    .replace(/on\s+the\s+(?:way|route)/giu, "nearby")
-    .replace(/along\s+the\s+route/giu, "nearby")
-    .replace(/route\s+from/giu, "near")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function insertSystemContext(
