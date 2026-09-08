@@ -2,6 +2,7 @@ package com.malik.lmai.feature.reminder
 
 import android.content.Context
 import com.malik.lmai.feature.assistant.HOwnerIdentity
+import com.malik.lmai.feature.assistant.HOwnerScope
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -85,7 +86,7 @@ class HLocationScopeStore @Inject constructor(
         nowMs: Long = System.currentTimeMillis(),
     ): HLocationScopeDecision = HLocationScopePolicy.evaluateCurrentPosition(load(nowMs), current, nowMs)
 
-    private fun prefix(): String = "${ownerIdentity.currentOwnerKey().hashCode()}_"
+    private fun prefix(): String = "${HOwnerScope.storageKey(ownerIdentity.currentOwnerKey())}_"
 
     private fun readPoint(prefix: String, kind: String): HGeoPoint? {
         val latKey = "${prefix}${kind}_lat"
