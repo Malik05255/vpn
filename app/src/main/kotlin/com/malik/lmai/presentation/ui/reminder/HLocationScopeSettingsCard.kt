@@ -1,5 +1,9 @@
 package com.malik.lmai.presentation.ui.reminder
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -29,8 +33,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.malik.lmai.feature.reminder.HGeoPoint
@@ -49,7 +55,35 @@ fun HLocationScopeSettingsCard(
 ) {
     val config by viewModel.config.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     var editingAnchor by remember { mutableStateOf(false) }
+    var pendingLocationAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        val action = pendingLocationAction
+        pendingLocationAction = null
+        action?.invoke()
+    }
+
+    fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    fun runWithLocationPermission(action: () -> Unit) {
+        if (hasLocationPermission()) {
+            action()
+        } else {
+            pendingLocationAction = action
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                )
+            )
+        }
+    }
 
     Surface(
         modifier = Modifier
@@ -89,7 +123,10 @@ fun HLocationScopeSettingsCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Button(onClick = viewModel::useCurrentAsBase, modifier = Modifier.weight(1f)) {
+                Button(
+                    onClick = { runWithLocationPermission(viewModel::useCurrentAsBase) },
+                    modifier = Modifier.weight(1f),
+                ) {
                     Text(if (base == null) "ثبّت موقعي الحالي" else "تحديث لموقعي الحالي")
                 }
                 if (base != null) {
@@ -124,7 +161,10 @@ fun HLocationScopeSettingsCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedButton(onClick = { viewModel.startTravelFromCurrent(24) }, modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = { runWithLocationPermission { viewModel.startTravelFromCurrent(24) } },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Text("وضع السفر من موقعي الحالي · 24 ساعة")
                 }
             } else {
