@@ -4,9 +4,11 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Geocoder
+import android.location.Location
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.Locale
 import javax.inject.Inject
@@ -34,26 +36,29 @@ class HDeviceLocationProvider @Inject constructor(
 
     suspend fun currentLocation(): HDeviceLocation? {
         if (!hasLocationPermission()) return null
-        val raw = suspendCancellableCoroutine { continuation ->
-            client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
+
+        val tokenSource = CancellationTokenSource()
+        val current: Location? = suspendCancellableCoroutine<Location?> { continuation ->
+            continuation.invokeOnCancellation { tokenSource.cancel() }
+            client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, tokenSource.token)
                 .addOnSuccessListener { location ->
                     if (continuation.isActive) continuation.resume(location)
                 }
                 .addOnFailureListener {
                     if (continuation.isActive) continuation.resume(null)
                 }
-        } ?: run {
-            val last = suspendCancellableCoroutine { continuation ->
-                client.lastLocation
-                    .addOnSuccessListener { location ->
-                        if (continuation.isActive) continuation.resume(location)
-                    }
-                    .addOnFailureListener {
-                        if (continuation.isActive) continuation.resume(null)
-                    }
-            } ?: return null
-            last
         }
+
+        val raw: Location = current ?: suspendCancellableCoroutine<Location?> { continuation ->
+            client.lastLocation
+                .addOnSuccessListener { location ->
+                    if (continuation.isActive) continuation.resume(location)
+                }
+                .addOnFailureListener {
+                    if (continuation.isActive) continuation.resume(null)
+                }
+        } ?: return null
+
         val label = reverseGeocode(raw.latitude, raw.longitude)
         return HDeviceLocation(raw.latitude, raw.longitude, label)
     }
