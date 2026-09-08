@@ -30,11 +30,17 @@ jobs:
       - name: Type-check OpenRouter OAuth function
         run: deno check cloud/supabase/h-openrouter-oauth/index.ts
 
+      - name: Type-check H provider configuration
+        run: deno check cloud/supabase/h-provider-config/index.ts cloud/supabase/h-provider-config/provider-policy.ts
+
       - name: Type-check H WhatsApp inbox runtime
         run: deno check cloud/supabase/h-whatsapp-inbox/index.ts
 
       - name: Type-check H route engines
         run: deno check cloud/supabase/h-whatsapp-inbox/route-engine.ts cloud/supabase/h-whatsapp-inbox/route-places-engine.ts cloud/supabase/h-whatsapp-inbox/route-place-enhancer.ts cloud/supabase/h-whatsapp-inbox/research-router.ts
+
+      - name: Test provider configuration policy
+        run: deno test cloud/supabase/h-provider-config/provider-policy_test.ts
 
       - name: Test strict free-model policy
         run: deno test cloud/supabase/h-whatsapp-inbox/openrouter-ai_test.ts
