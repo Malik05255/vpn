@@ -41,9 +41,9 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.malik.lmai.R
 
 /**
- * Small in-context setup card for the Android permissions H actually needs.
- * Background location is deliberately handled separately on Android 11+, where
- * Android expects the user to choose "Allow all the time" from app settings.
+ * In-context location-scope setup plus the Android permissions H needs.
+ * The large search scope is only a place-resolution filter; actual reminder
+ * geofences remain small and are scheduled independently.
  */
 @Composable
 fun HReminderPermissionCard(
@@ -51,11 +51,12 @@ fun HReminderPermissionCard(
     needsLocation: Boolean,
     onPermissionsChanged: () -> Unit,
 ) {
+    HLocationScopeCard()
+
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var refreshGeneration by remember { mutableIntStateOf(0) }
 
-    // Reading this state in composition makes permission checks refresh after each launcher result.
     @Suppress("UNUSED_VARIABLE")
     val refreshRead = refreshGeneration
 
