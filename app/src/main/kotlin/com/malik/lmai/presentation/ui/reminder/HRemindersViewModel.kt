@@ -2,6 +2,9 @@ package com.malik.lmai.presentation.ui.reminder
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.malik.lmai.feature.reminder.HDeviceLocationProvider
+import com.malik.lmai.feature.reminder.HLocationScope
+import com.malik.lmai.feature.reminder.HLocationScopeStore
 import com.malik.lmai.feature.reminder.HReminder
 import com.malik.lmai.feature.reminder.HReminderRepository
 import com.malik.lmai.feature.reminder.HReminderStatus
@@ -24,18 +27,25 @@ data class HRemindersUiState(
     val deleteCandidate: HReminder? = null,
     val hasAnyReminder: Boolean = false,
     val hasLocationReminder: Boolean = false,
+    val locationScope: HLocationScope = HLocationScope(),
+    val locationScopeBusy: Boolean = false,
+    val locationScopeMessage: String? = null,
 )
 
 @HiltViewModel
 class HRemindersViewModel @Inject constructor(
     private val repository: HReminderRepository,
+    private val locationScopeStore: HLocationScopeStore,
+    private val deviceLocationProvider: HDeviceLocationProvider,
 ) : ViewModel() {
     private val filter = MutableStateFlow(HReminderFilter.ALL)
     private val selected = MutableStateFlow<HReminder?>(null)
     private val editing = MutableStateFlow<HReminder?>(null)
     private val deleteCandidate = MutableStateFlow<HReminder?>(null)
+    private val locationScopeBusy = MutableStateFlow(false)
+    private val locationScopeMessage = MutableStateFlow<String?>(null)
 
-    val uiState = combine(
+    private val reminderState = combine(
         repository.observePersonal(),
         filter,
         selected,
@@ -58,11 +68,28 @@ class HRemindersViewModel @Inject constructor(
             hasAnyReminder = reminders.isNotEmpty(),
             hasLocationReminder = reminders.any { it.location != null || it.type == HReminderType.LOCATION },
         )
+    }
+
+    val uiState = combine(
+        reminderState,
+        locationScopeStore.scope,
+        locationScopeBusy,
+        locationScopeMessage,
+    ) { reminder, scope, busy, message ->
+        reminder.copy(
+            locationScope = scope,
+            locationScopeBusy = busy,
+            locationScopeMessage = message,
+        )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = HRemindersUiState(),
+        initialValue = HRemindersUiState(locationScope = locationScopeStore.current()),
     )
+
+    init {
+        locationScopeStore.refresh()
+    }
 
     fun setFilter(value: HReminderFilter) { filter.value = value }
     fun open(reminder: HReminder) { selected.value = reminder }
@@ -74,6 +101,49 @@ class HRemindersViewModel @Inject constructor(
     fun closeEdit() { editing.value = null }
     fun requestDelete(reminder: HReminder) { deleteCandidate.value = reminder }
     fun cancelDelete() { deleteCandidate.value = null }
+
+    fun pinCurrentLocation() = viewModelScope.launch {
+        if (locationScopeBusy.value) return@launch
+        locationScopeBusy.value = true
+        locationScopeMessage.value = null
+        try {
+            if (!deviceLocationProvider.hasLocationPermission()) {
+                locationScopeMessage.value = "اسمح بالموقع الدقيق أولًا لتثبيت نقطة الارتكاز."
+                return@launch
+            }
+            val current = deviceLocationProvider.currentLocation()
+            if (current == null) {
+                locationScopeMessage.value = "تعذر الحصول على موقعك الحالي. تأكد من تشغيل الموقع ثم حاول مرة أخرى."
+                return@launch
+            }
+            val radius = locationScopeStore.current().radiusKm
+            locationScopeStore.pin(
+                latitude = current.latitude,
+                longitude = current.longitude,
+                label = current.label ?: "موقعي المثبت",
+                radiusKm = radius,
+            )
+            locationScopeMessage.value = "تم تثبيت نقطة الارتكاز. H سيبحث عن الأماكن داخل ${radius.toInt()} كم فقط."
+        } finally {
+            locationScopeBusy.value = false
+        }
+    }
+
+    fun setLocationScopeRadius(radiusKm: Double) {
+        val value = locationScopeStore.setRadiusKm(radiusKm)
+        locationScopeMessage.value = if (value.isConfigured) {
+            "تم تحديث نطاق البحث إلى ${value.radiusKm.toInt()} كم."
+        } else {
+            "تم اختيار ${value.radiusKm.toInt()} كم. ثبّت موقعك الحالي لتفعيل النطاق."
+        }
+    }
+
+    fun clearLocationScope() {
+        locationScopeStore.clear()
+        locationScopeMessage.value = "تم إلغاء نقطة الارتكاز. لن ينشئ H تذكير مكان غامض حتى تثبّت نطاقًا جديدًا."
+    }
+
+    fun clearLocationScopeMessage() { locationScopeMessage.value = null }
 
     fun save(reminder: HReminder) = viewModelScope.launch {
         repository.update(reminder)
