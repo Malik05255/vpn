@@ -48,7 +48,7 @@
     <string name="h_reminder_filter_time">الزمنية</string>
     <string name="h_reminder_filter_done">المكتملة</string>
     <string name="h_location_scope_title">نطاق بحث الأماكن لـ H</string>
-    <string name="h_location_scope_desc">ثبّت نقطة ارتكاز. يبحث H عن أسماء الأماكن داخل هذا النطاق فقط ولا ينقله تلقائيًا إذا سافرت.</string>
+    <string name="h_location_scope_desc">ثبّت نقطة ارتكاز أساسية. يقيّد H أسماء الأماكن العامة بهذا النطاق إلا عند تشغيل وضع السفر أو إذا ذكرت مدينة أو منطقة أخرى صراحةً.</string>
     <string name="h_location_scope_status_configured">نقطة الارتكاز: %1$s · نطاق البحث: %2$d كم</string>
     <string name="h_location_scope_status_unconfigured">لم يتم التثبيت بعد · النطاق المختار: %1$d كم</string>
     <string name="h_location_scope_anchor_fallback">الموقع المثبت</string>
@@ -57,4 +57,13 @@
     <string name="h_location_scope_pin">تثبيت موقعي الحالي</string>
     <string name="h_location_scope_repin">إعادة تثبيت موقعي الحالي</string>
     <string name="h_location_scope_clear">إلغاء التثبيت</string>
+    <string name="h_location_travel_title">وضع السفر</string>
+    <string name="h_location_travel_desc">استخدم موقعك الحالي مؤقتًا كنقطة بحث مستقلة بنطاق 100 كم بدون تغيير نقطة الارتكاز الأساسية.</string>
+    <string name="h_location_travel_active">فعال حول %1$s · %2$d كم</string>
+    <string name="h_location_travel_current">موقع السفر الحالي</string>
+    <string name="h_location_travel_24h">24 ساعة</string>
+    <string name="h_location_travel_3d">3 أيام</string>
+    <string name="h_location_travel_until_return">حتى أرجع</string>
+    <string name="h_location_travel_manual">حتى أوقفه</string>
+    <string name="h_location_travel_stop">إيقاف وضع السفر</string>
 </resources>
