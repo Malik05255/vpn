@@ -5,11 +5,13 @@ on:
     paths:
       - "cloud/supabase/**"
       - ".github/workflows/h-cloud-runtime-ci.yml"
+      - ".github/workflows/h-supabase-runtime-deploy.yml"
   push:
     branches: [main]
     paths:
       - "cloud/supabase/**"
       - ".github/workflows/h-cloud-runtime-ci.yml"
+      - ".github/workflows/h-supabase-runtime-deploy.yml"
 
 permissions:
   contents: read
