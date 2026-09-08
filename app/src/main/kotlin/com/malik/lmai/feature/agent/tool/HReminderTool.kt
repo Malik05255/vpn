@@ -7,6 +7,11 @@ import com.malik.lmai.feature.agent.AgentToolCall
 import com.malik.lmai.feature.agent.AgentToolContext
 import com.malik.lmai.feature.agent.AgentToolDefinition
 import com.malik.lmai.feature.agent.AgentToolResult
+import com.malik.lmai.feature.reminder.HDeviceLocationProvider
+import com.malik.lmai.feature.reminder.HLocationScope
+import com.malik.lmai.feature.reminder.HLocationScopeException
+import com.malik.lmai.feature.reminder.HLocationScopePolicy
+import com.malik.lmai.feature.reminder.HLocationScopeStore
 import com.malik.lmai.feature.reminder.HLocationTriggerMode
 import com.malik.lmai.feature.reminder.HReminder
 import com.malik.lmai.feature.reminder.HReminderDomain
@@ -34,6 +39,8 @@ import kotlinx.serialization.json.jsonPrimitive
 @Singleton
 class HReminderTool @Inject constructor(
     private val repository: HReminderRepository,
+    private val locationScopeStore: HLocationScopeStore,
+    private val deviceLocationProvider: HDeviceLocationProvider,
     @ApplicationContext private val context: Context,
 ) : AgentTool {
 
@@ -44,6 +51,9 @@ class HReminderTool @Inject constructor(
             "Use domain PERSONAL for normal-life reminders. Use PROGRAMMING only when the reminder is specifically about coding, " +
             "software development, repositories, builds, or developing an app; programming reminders are intentionally hidden from the personal Reminders settings screen. " +
             "For a place request like 'إذا رحت حلي', prefer triggerMode DWELL with dwellMinutes=1 so merely passing through does not count as a visit. " +
+            "Location reminders use the fixed geographic search scope pinned by the user in the app. Never choose a same-named place outside that scope and never move the anchor automatically. " +
+            "The scope radius is only for finding/disambiguating places; the actual reminder geofence stays small around the selected place. " +
+            "If the user is outside the pinned scope, or the requested place only resolves outside it, report that they must update the anchor/radius in the app. " +
             "For location reminders, placeNameAr is required but latitude/longitude are optional: H resolves a named place on the device when coordinates are omitted. " +
             "Preserve the user's original wording in originalText. scheduledAtIso should be an absolute ISO-8601 time with offset when possible.",
         inputSchema = buildJsonObject {
@@ -102,7 +112,7 @@ class HReminderTool @Inject constructor(
         val location = parseLocation(args["location"] as? JsonObject)
         if (type == HReminderType.LOCATION && location == null) {
             return call.errorResult(
-                "Could not resolve the requested place. Include a clearer placeNameAr/addressAr or let the user choose the point from the Reminders map."
+                "تعذر تحديد المكان داخل نطاق البحث المثبت. حدّد نقطة الارتكاز والنطاق من شاشة التذكيرات في تطبيق H أو اختر مكانًا أوضح داخل النطاق."
             )
         }
         val reminder = repository.create(
@@ -120,6 +130,7 @@ class HReminderTool @Inject constructor(
         return call.result(buildJsonObject {
             put("ok", JsonPrimitive(true))
             put("reminder", reminderJson(reminder))
+            if (location != null) put("locationScope", scopeJson(locationScopeStore.current()))
         })
     }
 
@@ -153,7 +164,7 @@ class HReminderTool @Inject constructor(
             location = if (hasLocation) parseLocation(args["location"] as? JsonObject) else old.location,
         )
         if (hasLocation && updated.type == HReminderType.LOCATION && updated.location == null) {
-            return call.errorResult("Could not resolve the updated reminder location")
+            return call.errorResult("تعذر تحديد مكان التذكير المحدّث داخل نطاق البحث المثبت")
         }
         if (!repository.update(updated)) return call.errorResult("Reminder update rejected")
         return call.result(buildJsonObject { put("ok", JsonPrimitive(true)); put("reminder", reminderJson(updated)) })
@@ -184,12 +195,20 @@ class HReminderTool @Inject constructor(
         if (json == null) return null
         val name = json.string("placeNameAr") ?: return null
         val address = json.string("addressAr")
+        val scope = requireConfiguredScope()
+        rejectIfDeviceIsOutsideScope(scope)
+
         val providedLat = json["latitude"]?.jsonPrimitive?.content?.toDoubleOrNull()
         val providedLng = json["longitude"]?.jsonPrimitive?.content?.toDoubleOrNull()
         val coordinates = if (providedLat != null && providedLng != null) {
+            requireCandidateInsideScope(scope, name, providedLat, providedLng)
             providedLat to providedLng
         } else {
-            resolvePlace(name, address) ?: return null
+            resolvePlaceInsideScope(scope, name, address)
+                ?: throw HLocationScopeException(
+                    "لم أجد «$name» داخل نطاق ${scope.radiusKm.toInt()} كم من ${scope.anchorLabel ?: "نقطة الارتكاز"}. " +
+                        "لن أختار مكانًا أبعد تلقائيًا؛ عدّل نقطة الارتكاز أو النطاق من التطبيق إذا كنت تقصد مكانًا خارج النطاق."
+                )
         }
 
         return HReminderLocation(
@@ -204,17 +223,60 @@ class HReminderTool @Inject constructor(
         )
     }
 
-    private suspend fun resolvePlace(placeName: String, address: String?): Pair<Double, Double>? =
-        withContext(Dispatchers.IO) {
-            val query = listOfNotNull(placeName, address).joinToString("، ")
-            runCatching {
-                @Suppress("DEPRECATION")
-                Geocoder(context, Locale("ar", "SA"))
-                    .getFromLocationName(query, 1)
-                    ?.firstOrNull()
-                    ?.let { it.latitude to it.longitude }
-            }.getOrNull()
+    private fun requireConfiguredScope(): HLocationScope {
+        val scope = locationScopeStore.current()
+        if (!scope.isConfigured) {
+            throw HLocationScopeException(
+                "حدد نقطة الارتكاز ونطاق البحث الجغرافي من شاشة التذكيرات في تطبيق H أولًا. النطاق الافتراضي المقترح 100 كم."
+            )
         }
+        return scope
+    }
+
+    private suspend fun rejectIfDeviceIsOutsideScope(scope: HLocationScope) {
+        val current = deviceLocationProvider.currentLocation() ?: return
+        val evaluation = HLocationScopePolicy.evaluate(scope, current.latitude, current.longitude)
+        if (evaluation.configured && !evaluation.inside) {
+            val distance = evaluation.distanceKm?.toInt()
+            throw HLocationScopeException(
+                "أنت الآن خارج نطاق البحث المثبت${distance?.let { " بحوالي $it كم من نقطة الارتكاز" } ?: ""}. " +
+                    "لن أغيّر النطاق تلقائيًا. افتح شاشة التذكيرات في تطبيق H وثبّت موقعك الحالي أو عدّل نصف القطر ثم أعد الطلب."
+            )
+        }
+    }
+
+    private fun requireCandidateInsideScope(scope: HLocationScope, name: String, latitude: Double, longitude: Double) {
+        val evaluation = HLocationScopePolicy.evaluate(scope, latitude, longitude)
+        if (!evaluation.inside) {
+            val distance = evaluation.distanceKm?.toInt()
+            throw HLocationScopeException(
+                "المكان «$name» خارج نطاق ${scope.radiusKm.toInt()} كم المثبت" +
+                    (distance?.let { " (يبعد نحو $it كم عن نقطة الارتكاز)" } ?: "") +
+                    ". عدّل النطاق من التطبيق إذا كنت تقصد هذا المكان."
+            )
+        }
+    }
+
+    private suspend fun resolvePlaceInsideScope(
+        scope: HLocationScope,
+        placeName: String,
+        address: String?,
+    ): Pair<Double, Double>? = withContext(Dispatchers.IO) {
+        val query = listOfNotNull(placeName, address).joinToString("، ")
+        runCatching {
+            @Suppress("DEPRECATION")
+            Geocoder(context, Locale("ar", "SA"))
+                .getFromLocationName(query, 10)
+                .orEmpty()
+                .map { item ->
+                    val evaluation = HLocationScopePolicy.evaluate(scope, item.latitude, item.longitude)
+                    Triple(item.latitude, item.longitude, evaluation)
+                }
+                .filter { it.third.inside }
+                .minByOrNull { it.third.distanceKm ?: Double.MAX_VALUE }
+                ?.let { it.first to it.second }
+        }.getOrNull()
+    }
 
     private fun reminderJson(reminder: HReminder) = buildJsonObject {
         put("id", JsonPrimitive(reminder.id))
@@ -239,6 +301,12 @@ class HReminderTool @Inject constructor(
                 put("triggerMode", JsonPrimitive(location.triggerMode.name))
             })
         }
+    }
+
+    private fun scopeJson(scope: HLocationScope) = buildJsonObject {
+        put("configured", JsonPrimitive(scope.isConfigured))
+        put("radiusKm", JsonPrimitive(scope.radiusKm))
+        scope.anchorLabel?.let { put("anchorLabel", JsonPrimitive(it)) }
     }
 
     private fun JsonObject.string(key: String): String? =
