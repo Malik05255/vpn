@@ -47,4 +47,14 @@
     <string name="h_reminder_filter_location">الأماكن</string>
     <string name="h_reminder_filter_time">الزمنية</string>
     <string name="h_reminder_filter_done">المكتملة</string>
+    <string name="h_location_scope_title">نطاق بحث الأماكن لـ H</string>
+    <string name="h_location_scope_desc">ثبّت نقطة ارتكاز. يبحث H عن أسماء الأماكن داخل هذا النطاق فقط ولا ينقله تلقائيًا إذا سافرت.</string>
+    <string name="h_location_scope_status_configured">نقطة الارتكاز: %1$s · نطاق البحث: %2$d كم</string>
+    <string name="h_location_scope_status_unconfigured">لم يتم التثبيت بعد · النطاق المختار: %1$d كم</string>
+    <string name="h_location_scope_anchor_fallback">الموقع المثبت</string>
+    <string name="h_location_scope_km">%1$d كم</string>
+    <string name="h_location_scope_not_geofence">الدائرة الكبيرة فلتر للبحث عن الأماكن فقط. منطقة تشغيل التذكير الفعلية تبقى صغيرة حول المتجر أو المكان المحدد.</string>
+    <string name="h_location_scope_pin">تثبيت موقعي الحالي</string>
+    <string name="h_location_scope_repin">إعادة تثبيت موقعي الحالي</string>
+    <string name="h_location_scope_clear">إلغاء التثبيت</string>
 </resources>
