@@ -33,8 +33,8 @@ jobs:
       - name: Type-check H WhatsApp inbox runtime
         run: deno check cloud/supabase/h-whatsapp-inbox/index.ts
 
-      - name: Type-check H route engine
-        run: deno check cloud/supabase/h-whatsapp-inbox/route-engine.ts cloud/supabase/h-whatsapp-inbox/research-router.ts
+      - name: Type-check H route engines
+        run: deno check cloud/supabase/h-whatsapp-inbox/route-engine.ts cloud/supabase/h-whatsapp-inbox/route-places-engine.ts cloud/supabase/h-whatsapp-inbox/research-router.ts
 
       - name: Test strict free-model policy
         run: deno test cloud/supabase/h-whatsapp-inbox/openrouter-ai_test.ts
@@ -44,3 +44,6 @@ jobs:
 
       - name: Test H route policy
         run: deno test cloud/supabase/h-whatsapp-inbox/route-engine_test.ts
+
+      - name: Test H route-aware place policy
+        run: deno test cloud/supabase/h-whatsapp-inbox/route-places-engine_test.ts
