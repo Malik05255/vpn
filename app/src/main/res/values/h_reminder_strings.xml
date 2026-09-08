@@ -48,7 +48,7 @@
     <string name="h_reminder_filter_time">Time</string>
     <string name="h_reminder_filter_done">Done</string>
     <string name="h_location_scope_title">H place search area</string>
-    <string name="h_location_scope_desc">Pin a fixed anchor. H only resolves place names inside this radius and never moves it automatically when you travel.</string>
+    <string name="h_location_scope_desc">Pin a base anchor. H resolves generic place names only inside this radius unless travel mode is active or you explicitly name another city/area.</string>
     <string name="h_location_scope_status_configured">Anchor: %1$s · search radius: %2$d km</string>
     <string name="h_location_scope_status_unconfigured">Not pinned yet · selected radius: %1$d km</string>
     <string name="h_location_scope_anchor_fallback">Pinned location</string>
@@ -57,4 +57,13 @@
     <string name="h_location_scope_pin">Pin my current location</string>
     <string name="h_location_scope_repin">Re-pin current location</string>
     <string name="h_location_scope_clear">Unpin</string>
+    <string name="h_location_travel_title">Travel mode</string>
+    <string name="h_location_travel_desc">Temporarily use your current location as a separate 100 km search anchor without changing the base anchor.</string>
+    <string name="h_location_travel_active">Active around %1$s · %2$d km</string>
+    <string name="h_location_travel_current">current travel location</string>
+    <string name="h_location_travel_24h">24 hours</string>
+    <string name="h_location_travel_3d">3 days</string>
+    <string name="h_location_travel_until_return">Until I return</string>
+    <string name="h_location_travel_manual">Until I stop it</string>
+    <string name="h_location_travel_stop">Stop travel mode</string>
 </resources>
