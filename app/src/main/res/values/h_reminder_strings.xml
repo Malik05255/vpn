@@ -47,4 +47,14 @@
     <string name="h_reminder_filter_location">Places</string>
     <string name="h_reminder_filter_time">Time</string>
     <string name="h_reminder_filter_done">Done</string>
+    <string name="h_location_scope_title">H place search area</string>
+    <string name="h_location_scope_desc">Pin a fixed anchor. H only resolves place names inside this radius and never moves it automatically when you travel.</string>
+    <string name="h_location_scope_status_configured">Anchor: %1$s · search radius: %2$d km</string>
+    <string name="h_location_scope_status_unconfigured">Not pinned yet · selected radius: %1$d km</string>
+    <string name="h_location_scope_anchor_fallback">Pinned location</string>
+    <string name="h_location_scope_km">%1$d km</string>
+    <string name="h_location_scope_not_geofence">This large circle is only a place-search filter. The actual reminder trigger stays a small geofence around the selected shop or place.</string>
+    <string name="h_location_scope_pin">Pin my current location</string>
+    <string name="h_location_scope_repin">Re-pin current location</string>
+    <string name="h_location_scope_clear">Unpin</string>
 </resources>
