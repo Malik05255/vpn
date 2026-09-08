@@ -1,12 +1,21 @@
 package com.malik.lmai.feature.agent.tool
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.location.Geocoder
+import androidx.core.content.ContextCompat
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import com.malik.lmai.feature.agent.AgentTool
 import com.malik.lmai.feature.agent.AgentToolCall
 import com.malik.lmai.feature.agent.AgentToolContext
 import com.malik.lmai.feature.agent.AgentToolDefinition
 import com.malik.lmai.feature.agent.AgentToolResult
+import com.malik.lmai.feature.reminder.HGeoPoint
+import com.malik.lmai.feature.reminder.HLocationScopeOutcome
+import com.malik.lmai.feature.reminder.HLocationScopePolicy
+import com.malik.lmai.feature.reminder.HLocationScopeStore
 import com.malik.lmai.feature.reminder.HLocationTriggerMode
 import com.malik.lmai.feature.reminder.HReminder
 import com.malik.lmai.feature.reminder.HReminderDomain
@@ -22,7 +31,10 @@ import java.time.ZoneId
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.resume
+import kotlin.math.cos
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -34,6 +46,7 @@ import kotlinx.serialization.json.jsonPrimitive
 @Singleton
 class HReminderTool @Inject constructor(
     private val repository: HReminderRepository,
+    private val locationScopeStore: HLocationScopeStore,
     @ApplicationContext private val context: Context,
 ) : AgentTool {
 
@@ -45,6 +58,10 @@ class HReminderTool @Inject constructor(
             "software development, repositories, builds, or developing an app; programming reminders are intentionally hidden from the personal Reminders settings screen. " +
             "For a place request like 'إذا رحت حلي', prefer triggerMode DWELL with dwellMinutes=1 so merely passing through does not count as a visit. " +
             "For location reminders, placeNameAr is required but latitude/longitude are optional: H resolves a named place on the device when coordinates are omitted. " +
+            "H may have a user-pinned place-search anchor and radius (default 100 km). Ambiguous/local place names MUST resolve inside that scope. " +
+            "Set location.explicitDistantPlace=true ONLY when the user's wording explicitly identifies a distant city/place (for example 'جرير في الرياض'); never set it merely to bypass the scope. " +
+            "If the tool reports OUTSIDE_BASE_SCOPE, tell the user they are outside the configured search radius and ask them to update the anchor or enable Travel mode from the Reminders screen. " +
+            "The large search radius is never the reminder geofence; the actual target keeps its small POI radius. " +
             "Preserve the user's original wording in originalText. scheduledAtIso should be an absolute ISO-8601 time with offset when possible.",
         inputSchema = buildJsonObject {
             put("type", JsonPrimitive("object"))
@@ -71,6 +88,10 @@ class HReminderTool @Inject constructor(
                         put("radiusMeters", buildJsonObject { put("type", JsonPrimitive("number")) })
                         put("dwellMinutes", intProp("Minutes inside the area before a DWELL reminder fires; default 1"))
                         put("triggerMode", stringProp("ARRIVE, DWELL, DEPART, or NEARBY"))
+                        put("explicitDistantPlace", buildJsonObject {
+                            put("type", JsonPrimitive("boolean"))
+                            put("description", JsonPrimitive("True only when the user explicitly named/disambiguated a place outside their normal area; never infer this just to bypass H's configured radius."))
+                        })
                     })
                 })
             })
@@ -102,7 +123,7 @@ class HReminderTool @Inject constructor(
         val location = parseLocation(args["location"] as? JsonObject)
         if (type == HReminderType.LOCATION && location == null) {
             return call.errorResult(
-                "Could not resolve the requested place. Include a clearer placeNameAr/addressAr or let the user choose the point from the Reminders map."
+                "Could not resolve the requested place inside H's configured place-search scope. Ask the user for a clearer place/address or let them choose the point from the Reminders map."
             )
         }
         val reminder = repository.create(
@@ -153,7 +174,7 @@ class HReminderTool @Inject constructor(
             location = if (hasLocation) parseLocation(args["location"] as? JsonObject) else old.location,
         )
         if (hasLocation && updated.type == HReminderType.LOCATION && updated.location == null) {
-            return call.errorResult("Could not resolve the updated reminder location")
+            return call.errorResult("Could not resolve the updated reminder location inside H's configured place-search scope")
         }
         if (!repository.update(updated)) return call.errorResult("Reminder update rejected")
         return call.result(buildJsonObject { put("ok", JsonPrimitive(true)); put("reminder", reminderJson(updated)) })
@@ -184,12 +205,34 @@ class HReminderTool @Inject constructor(
         if (json == null) return null
         val name = json.string("placeNameAr") ?: return null
         val address = json.string("addressAr")
+        val explicitDistant = json.boolean("explicitDistantPlace") == true
+        val config = locationScopeStore.load()
+
+        if (!explicitDistant && config.baseAnchor != null && config.travelAnchor == null) {
+            currentDevicePoint()?.let { current ->
+                val currentDecision = HLocationScopePolicy.evaluateCurrentPosition(config, current)
+                if (currentDecision.outcome == HLocationScopeOutcome.OUTSIDE_BASE_SCOPE) {
+                    val distance = currentDecision.distanceKm?.toInt()
+                    throw IllegalArgumentException(
+                        "OUTSIDE_BASE_SCOPE: Device is ${distance?.let { "$it km" } ?: "outside"} from the pinned anchor, beyond the ${config.radiusKm.toInt()} km search radius. Ask the user to update the anchor or enable Travel mode in H Reminders."
+                    )
+                }
+            }
+        }
+
         val providedLat = json["latitude"]?.jsonPrimitive?.content?.toDoubleOrNull()
         val providedLng = json["longitude"]?.jsonPrimitive?.content?.toDoubleOrNull()
         val coordinates = if (providedLat != null && providedLng != null) {
+            val candidate = HGeoPoint(providedLat, providedLng, name)
+            val decision = HLocationScopePolicy.evaluateCandidate(config, candidate, explicitDistant)
+            if (!decision.allowed) {
+                throw IllegalArgumentException(
+                    "OUTSIDE_SCOPE: '$name' resolved ${decision.distanceKm?.toInt() ?: "more than"} km from H's anchor, outside the ${config.radiusKm.toInt()} km search radius. Do not create this reminder unless the user explicitly identifies that distant place or changes the scope in the app."
+                )
+            }
             providedLat to providedLng
         } else {
-            resolvePlace(name, address) ?: return null
+            resolvePlace(name, address, explicitDistant) ?: return null
         }
 
         return HReminderLocation(
@@ -204,17 +247,82 @@ class HReminderTool @Inject constructor(
         )
     }
 
-    private suspend fun resolvePlace(placeName: String, address: String?): Pair<Double, Double>? =
-        withContext(Dispatchers.IO) {
-            val query = listOfNotNull(placeName, address).joinToString("، ")
-            runCatching {
-                @Suppress("DEPRECATION")
-                Geocoder(context, Locale("ar", "SA"))
-                    .getFromLocationName(query, 1)
-                    ?.firstOrNull()
-                    ?.let { it.latitude to it.longitude }
-            }.getOrNull()
+    private suspend fun resolvePlace(
+        placeName: String,
+        address: String?,
+        explicitDistant: Boolean,
+    ): Pair<Double, Double>? = withContext(Dispatchers.IO) {
+        val query = listOfNotNull(placeName, address).joinToString("، ")
+        val config = locationScopeStore.load()
+        val active = config.activeAnchor()
+        runCatching {
+            val geocoder = Geocoder(context, Locale("ar", "SA"))
+            @Suppress("DEPRECATION")
+            val candidates = if (active != null && !explicitDistant) {
+                val anchor = active.second
+                val bounds = searchBounds(anchor, config.radiusKm)
+                geocoder.getFromLocationName(
+                    query,
+                    8,
+                    bounds.lowerLat,
+                    bounds.lowerLon,
+                    bounds.upperLat,
+                    bounds.upperLon,
+                ).orEmpty()
+            } else {
+                geocoder.getFromLocationName(query, 8).orEmpty()
+            }
+
+            candidates
+                .asSequence()
+                .map { HGeoPoint(it.latitude, it.longitude, it.featureName ?: placeName) }
+                .filter { candidate ->
+                    HLocationScopePolicy.evaluateCandidate(config, candidate, explicitDistant).allowed
+                }
+                .minByOrNull { candidate ->
+                    active?.second?.let { HLocationScopePolicy.distanceKm(it, candidate) } ?: 0.0
+                }
+                ?.let { it.latitude to it.longitude }
+        }.getOrNull()
+    }
+
+    private suspend fun currentDevicePoint(): HGeoPoint? {
+        val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!fine && !coarse) return null
+
+        val client = LocationServices.getFusedLocationProviderClient(context)
+        val last = suspendCancellableCoroutine<android.location.Location?> { continuation ->
+            client.lastLocation
+                .addOnSuccessListener { location -> if (continuation.isActive) continuation.resume(location) }
+                .addOnFailureListener { if (continuation.isActive) continuation.resume(null) }
         }
+        val location = last ?: suspendCancellableCoroutine<android.location.Location?> { continuation ->
+            client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
+                .addOnSuccessListener { current -> if (continuation.isActive) continuation.resume(current) }
+                .addOnFailureListener { if (continuation.isActive) continuation.resume(null) }
+        }
+        return location?.let { HGeoPoint(it.latitude, it.longitude, "current") }
+    }
+
+    private fun searchBounds(anchor: HGeoPoint, radiusKm: Double): SearchBounds {
+        val latDelta = radiusKm / 110.574
+        val cosLat = cos(Math.toRadians(anchor.latitude)).coerceAtLeast(0.05)
+        val lonDelta = radiusKm / (111.320 * cosLat)
+        return SearchBounds(
+            lowerLat = (anchor.latitude - latDelta).coerceAtLeast(-90.0),
+            lowerLon = normalizeLongitude(anchor.longitude - lonDelta),
+            upperLat = (anchor.latitude + latDelta).coerceAtMost(90.0),
+            upperLon = normalizeLongitude(anchor.longitude + lonDelta),
+        )
+    }
+
+    private fun normalizeLongitude(value: Double): Double {
+        var normalized = value
+        while (normalized < -180.0) normalized += 360.0
+        while (normalized > 180.0) normalized -= 360.0
+        return normalized
+    }
 
     private fun reminderJson(reminder: HReminder) = buildJsonObject {
         put("id", JsonPrimitive(reminder.id))
@@ -244,9 +352,19 @@ class HReminderTool @Inject constructor(
     private fun JsonObject.string(key: String): String? =
         this[key]?.jsonPrimitive?.content?.trim()?.takeIf { it.isNotBlank() }
 
+    private fun JsonObject.boolean(key: String): Boolean? =
+        this[key]?.jsonPrimitive?.content?.toBooleanStrictOrNull()
+
     private fun JsonObject.requiredId(): String =
         string("id") ?: throw IllegalArgumentException("Reminder id is required")
 
     private inline fun <reified T : Enum<T>> enumOrDefault(value: String?, fallback: T): T =
         runCatching { enumValueOf<T>(value.orEmpty().uppercase()) }.getOrDefault(fallback)
+
+    private data class SearchBounds(
+        val lowerLat: Double,
+        val lowerLon: Double,
+        val upperLat: Double,
+        val upperLon: Double,
+    )
 }
