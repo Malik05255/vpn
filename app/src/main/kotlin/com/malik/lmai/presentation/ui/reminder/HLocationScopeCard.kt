@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.MyLocation
+import androidx.compose.material.icons.outlined.TravelExplore
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -46,11 +47,10 @@ import com.google.maps.android.compose.rememberCameraPositionState
 import com.malik.lmai.BuildConfig
 import com.malik.lmai.R
 import com.malik.lmai.feature.reminder.HLocationScope
+import com.malik.lmai.feature.reminder.HTravelExpiryMode
 
 @Composable
-fun HLocationScopeCard(
-    viewModel: HRemindersViewModel = hiltViewModel(),
-) {
+fun HLocationScopeCard(viewModel: HRemindersViewModel = hiltViewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     HLocationScopeCardContent(
         scope = state.locationScope,
@@ -58,6 +58,8 @@ fun HLocationScopeCard(
         message = state.locationScopeMessage,
         onPinCurrent = viewModel::pinCurrentLocation,
         onRadiusChange = viewModel::setLocationScopeRadius,
+        onStartTravel = viewModel::startTravelMode,
+        onStopTravel = viewModel::stopTravelMode,
         onClear = viewModel::clearLocationScope,
     )
 }
@@ -69,12 +71,24 @@ private fun HLocationScopeCardContent(
     message: String?,
     onPinCurrent: () -> Unit,
     onRadiusChange: (Double) -> Unit,
+    onStartTravel: (HTravelExpiryMode) -> Unit,
+    onStopTravel: () -> Unit,
     onClear: () -> Unit,
 ) {
     val context = LocalContext.current
+    var pendingLocationAction by remember { androidx.compose.runtime.mutableStateOf<(() -> Unit)?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) onPinCurrent()
+        if (granted) pendingLocationAction?.invoke()
+        pendingLocationAction = null
     }
+    fun runWithLocationPermission(action: () -> Unit) {
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (granted) action() else {
+            pendingLocationAction = action
+            permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
     val anchor = if (scope.isConfigured) LatLng(scope.anchorLatitude!!, scope.anchorLongitude!!) else null
     val mapsConfigured = BuildConfig.GOOGLE_MAPS_API_KEY.isNotBlank()
     val primary = MaterialTheme.colorScheme.primary
@@ -85,39 +99,21 @@ private fun HLocationScopeCardContent(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.72f)),
         tonalElevation = 1.dp,
     ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Icon(Icons.Outlined.LocationOn, contentDescription = null, tint = primary)
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        stringResource(R.string.h_location_scope_title),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        stringResource(R.string.h_location_scope_desc),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Text(stringResource(R.string.h_location_scope_title), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.h_location_scope_desc), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
             Text(
-                if (scope.isConfigured) {
-                    stringResource(
-                        R.string.h_location_scope_status_configured,
-                        scope.anchorLabel ?: stringResource(R.string.h_location_scope_anchor_fallback),
-                        scope.radiusKm.toInt(),
-                    )
-                } else {
-                    stringResource(R.string.h_location_scope_status_unconfigured, scope.radiusKm.toInt())
-                },
+                if (scope.isConfigured) stringResource(
+                    R.string.h_location_scope_status_configured,
+                    scope.anchorLabel ?: stringResource(R.string.h_location_scope_anchor_fallback),
+                    scope.radiusKm.toInt(),
+                ) else stringResource(R.string.h_location_scope_status_unconfigured, scope.radiusKm.toInt()),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
             )
@@ -144,22 +140,15 @@ private fun HLocationScopeCardContent(
                         else -> 9.0f
                     }
                 }
-                val camera = rememberCameraPositionState {
-                    position = CameraPosition.fromLatLngZoom(anchor, zoom)
-                }
+                val camera = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(anchor, zoom) }
                 GoogleMap(
                     modifier = Modifier.fillMaxWidth().height(190.dp),
                     cameraPositionState = camera,
                     uiSettings = com.google.maps.android.compose.MapUiSettings(
-                        zoomControlsEnabled = false,
-                        mapToolbarEnabled = false,
-                        myLocationButtonEnabled = false,
+                        zoomControlsEnabled = false, mapToolbarEnabled = false, myLocationButtonEnabled = false,
                     ),
                 ) {
-                    Marker(
-                        state = MarkerState(anchor),
-                        title = scope.anchorLabel ?: stringResource(R.string.h_location_scope_anchor_fallback),
-                    )
+                    Marker(state = MarkerState(anchor), title = scope.anchorLabel ?: stringResource(R.string.h_location_scope_anchor_fallback))
                     Circle(
                         center = anchor,
                         radius = scope.radiusKm * 1000.0,
@@ -170,44 +159,74 @@ private fun HLocationScopeCardContent(
                 }
             }
 
-            Text(
-                stringResource(R.string.h_location_scope_not_geofence),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Text(stringResource(R.string.h_location_scope_not_geofence), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-            message?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+            if (scope.isConfigured) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Outlined.TravelExplore, contentDescription = null, tint = primary)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(stringResource(R.string.h_location_travel_title), fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    if (scope.isTravelConfigured) stringResource(
+                                        R.string.h_location_travel_active,
+                                        scope.travelLabel ?: stringResource(R.string.h_location_travel_current),
+                                        scope.travelRadiusKm.toInt(),
+                                    ) else stringResource(R.string.h_location_travel_desc),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        if (scope.isTravelConfigured) {
+                            OutlinedButton(onClick = onStopTravel, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                                Text(stringResource(R.string.h_location_travel_stop))
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                listOf(
+                                    HTravelExpiryMode.HOURS_24 to R.string.h_location_travel_24h,
+                                    HTravelExpiryMode.DAYS_3 to R.string.h_location_travel_3d,
+                                    HTravelExpiryMode.UNTIL_RETURN to R.string.h_location_travel_until_return,
+                                    HTravelExpiryMode.MANUAL to R.string.h_location_travel_manual,
+                                ).forEach { (mode, label) ->
+                                    FilterChip(
+                                        selected = false,
+                                        enabled = !busy,
+                                        onClick = { runWithLocationPermission { onStartTravel(mode) } },
+                                        label = { Text(stringResource(label)) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+            message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     modifier = Modifier.weight(1f),
                     enabled = !busy,
-                    onClick = {
-                        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
-                            PackageManager.PERMISSION_GRANTED
-                        if (granted) onPinCurrent() else permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
-                    },
+                    onClick = { runWithLocationPermission(onPinCurrent) },
                 ) {
                     Icon(Icons.Outlined.MyLocation, contentDescription = null)
                     Text(
-                        if (scope.isConfigured) stringResource(R.string.h_location_scope_repin)
-                        else stringResource(R.string.h_location_scope_pin),
+                        if (scope.isConfigured) stringResource(R.string.h_location_scope_repin) else stringResource(R.string.h_location_scope_pin),
                         modifier = Modifier.padding(start = 6.dp),
                     )
                 }
                 if (scope.isConfigured) {
-                    OutlinedButton(onClick = onClear, enabled = !busy) {
-                        Text(stringResource(R.string.h_location_scope_clear))
-                    }
+                    OutlinedButton(onClick = onClear, enabled = !busy) { Text(stringResource(R.string.h_location_scope_clear)) }
                 }
             }
         }
