@@ -8,6 +8,10 @@ import {
   type ResearchIntent,
 } from "./research-engine.ts";
 import {
+  enhanceRoutePlaceResearch,
+  type RoutePlaceEnhancement,
+} from "./route-place-enhancer.ts";
+import {
   isRouteAwarePlaceDiscovery,
   prepareRoutePlacesResearch,
   type RoutePlacesResearchResult,
@@ -23,6 +27,7 @@ export type { Evidence, ResearchIntent };
 export type ResearchBundle = BaseResearchBundle & {
   routeResearch?: RouteResearchResult;
   routePlacesResearch?: RoutePlacesResearchResult;
+  routePlaceEnhancement?: RoutePlaceEnhancement;
 };
 
 /**
@@ -54,24 +59,44 @@ export async function prepareResearchBundle(
         };
       }
 
-      // The route engine verifies geometry/corridor proximity. The normal research engine
-      // separately gathers menu/service evidence so a route match cannot silently become
-      // a claim that the place offers the requested dish/service.
+      // Geometry/corridor proximity comes from the route+places engine. General research
+      // supplies broader place/menu evidence, while the enhancer verifies exact-candidate
+      // menu evidence and calculates actual ORS Matrix detours when possible.
       const prepared = await prepareBaseResearchBundle(
         db,
         replaceLatestUserMessage(messages, routePlaces.placeSearchQuery),
       );
-      const restoredMessages = replaceLatestUserMessage(prepared.messages, query);
+      const enhancement = routePlaces.status === "verified"
+        ? await enhanceRoutePlaceResearch(db, routePlaces)
+        : null;
+      let restoredMessages = replaceLatestUserMessage(prepared.messages, query);
+      restoredMessages = insertSystemContext(restoredMessages, routePlaces.context);
+      if (enhancement?.context) restoredMessages = insertSystemContext(restoredMessages, enhancement.context);
+
       return {
         ...prepared,
         active: true,
         intent: "local_places",
         query,
-        messages: insertSystemContext(restoredMessages, routePlaces.context),
-        providerTrace: uniqueStrings([...routePlaces.providerTrace, ...prepared.providerTrace]),
-        hardConstraints: uniqueStrings([...routePlaces.hardConstraints, ...prepared.hardConstraints]),
+        messages: restoredMessages,
+        evidence: dedupeEvidence([
+          ...prepared.evidence,
+          ...(enhancement?.evidence ?? []),
+        ]),
+        providerTrace: uniqueStrings([
+          ...routePlaces.providerTrace,
+          ...prepared.providerTrace,
+          ...(enhancement?.providerTrace ?? []),
+        ]),
+        hardConstraints: uniqueStrings([
+          ...routePlaces.hardConstraints,
+          ...prepared.hardConstraints,
+          ...(enhancement?.detours.length ? ["detour_claims_require_ors_matrix=true"] : []),
+          ...(routePlaces.parsed.requestedNeed ? ["exact_candidate_need_requires_exact_place_evidence=true"] : []),
+        ]),
         priority: routePlaces.priority,
         routePlacesResearch: routePlaces,
+        routePlaceEnhancement: enhancement ?? undefined,
       };
     }
   }
@@ -101,6 +126,7 @@ export function buildVerifierMessages(
   if (bundle.routePlacesResearch) {
     const base = buildBaseVerifierMessages(bundle, candidateDecisionJson);
     const routePlaces = bundle.routePlacesResearch;
+    const enhancement = bundle.routePlaceEnhancement;
     return base.map((message, index) => {
       if (index === 0) {
         return {
@@ -110,9 +136,12 @@ export function buildVerifierMessages(
             "",
             "ROUTE+PLACES VERIFIER RULES:",
             "- Treat H_VERIFIED_ROUTE_PLACES_CONTEXT as provider-backed route/corridor evidence.",
-            "- corridor_distance is geometric distance from the candidate coordinate to the verified route line, not driving detour distance/time.",
-            "- Never claim exact detour time/distance, fastest stop, traffic impact or road access unless separately verified.",
+            "- corridor_distance is geometric distance from the candidate coordinate to the verified route line.",
+            "- Treat H_ROUTE_PLACE_ENHANCEMENT_CONTEXT ORS Matrix values as verified route estimates for origin -> candidate -> destination.",
+            "- Never call corridor distance a driving detour. Exact detour distance/time may only come from supplied ORS Matrix facts.",
+            "- Detour duration is not live traffic. Never invent traffic, closures, tolls, incidents or road access.",
             "- If mandatory_place_need exists, the exact place must have explicit provider/menu/web evidence for that need before you state it offers the dish/service.",
+            "- When high rating is requested, use only explicit verified ratings and prefer the highest-rated candidate only after mandatory constraints are satisfied.",
             "- When route status is missing/unavailable, preserve useful independent place evidence but clearly mark the route constraint unverified.",
           ].join("\n"),
         };
@@ -126,7 +155,8 @@ export function buildVerifierMessages(
             `Route+places status: ${routePlaces.status}`,
             "VERIFIED ROUTE+PLACES CONTEXT:",
             routePlaces.context,
-          ].join("\n"),
+            enhancement?.context ? "\nVERIFIED ROUTE-PLACE ENHANCEMENT:\n" + enhancement.context : "",
+          ].filter(Boolean).join("\n"),
         };
       }
       return message;
@@ -222,4 +252,16 @@ function latestUserMessage(messages: Array<Record<string, string>>): string {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function dedupeEvidence(values: Evidence[]): Evidence[] {
+  const seen = new Set<string>();
+  const result: Evidence[] = [];
+  for (const value of values) {
+    const key = `${value.provider}:${value.url || value.title}`.toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
 }
