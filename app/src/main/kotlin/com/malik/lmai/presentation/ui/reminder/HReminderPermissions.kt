@@ -51,6 +51,10 @@ fun HReminderPermissionCard(
     needsLocation: Boolean,
     onPermissionsChanged: () -> Unit,
 ) {
+    // H's configurable place-search anchor belongs beside location reminder controls.
+    // It is shown even when Android permissions are already granted.
+    HLocationScopeSettingsCard()
+
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var refreshGeneration by remember { mutableIntStateOf(0) }
