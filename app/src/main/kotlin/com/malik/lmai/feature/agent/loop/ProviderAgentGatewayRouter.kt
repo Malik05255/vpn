@@ -7,7 +7,6 @@ import com.malik.lmai.feature.agent.AgentModelGateway
 import com.malik.lmai.feature.agent.AgentModelRequest
 import com.malik.lmai.feature.ai.FreeAiFailoverCoordinator
 import com.malik.lmai.feature.ai.FreeAiRouter
-import com.malik.lmai.feature.ai.HMediaPipeAgentGateway
 import com.malik.lmai.feature.ai.ProviderHealthTracker
 import com.malik.lmai.feature.ai.openrouter.OpenRouterCredentialStore
 import com.malik.lmai.feature.assistant.HAssistantContext
@@ -23,15 +22,13 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * Single routing gateway for المساعد الشخصي H / مساعد H الرقمي.
  *
- * Explicit user-managed APIs keep priority. Built-in connected routes provide the
- * normal online path, while the independent local Qwen runtime remains an offline
- * fallback when connected routes are unavailable.
+ * H is the only assistant identity. Explicit user-managed APIs and built-in cloud
+ * routes are execution backends only; no on-device/local model is part of H.
  */
 @Singleton
 class ProviderAgentGatewayRouter @Inject constructor(
     private val qwenGateway: QwenChatCompletionsAgentGateway,
     private val openAiResponsesGateway: OpenAiResponsesAgentGateway,
-    private val hMediaPipeAgentGateway: HMediaPipeAgentGateway,
     private val failoverCoordinator: FreeAiFailoverCoordinator,
     private val freeAiRouter: FreeAiRouter,
     private val providerHealthTracker: ProviderHealthTracker,
@@ -113,11 +110,6 @@ class ProviderAgentGatewayRouter @Inject constructor(
 
             try {
                 val providerFlow: Flow<AgentModelEvent>? = when {
-                    isLocalHPlatform(platform) ->
-                        hMediaPipeAgentGateway.streamTurn(activeRequest)
-
-                    isAnyInternalLocalPlatform(platform) -> null
-
                     isOpenRouterPlatform(platform) && activeRequest.hasImageAttachments() ->
                         openAiResponsesGateway.streamTurn(activeRequest)
 
@@ -138,7 +130,6 @@ class ProviderAgentGatewayRouter @Inject constructor(
                     val enforceInteractiveFirstOutputDeadline =
                         turnMode != ChatTurnMode.APP_EXECUTION &&
                             freeAiRouter.isInternalFree(platform) &&
-                            !isLocalHPlatform(platform) &&
                             !activeRequest.hasImageAttachments()
 
                     coroutineScope {
@@ -310,20 +301,7 @@ class ProviderAgentGatewayRouter @Inject constructor(
                 FreeAiFailoverCoordinator.Result.ManualMode,
                 FreeAiFailoverCoordinator.Result.FreeAiDisabled,
                 FreeAiFailoverCoordinator.Result.NoFallbackAvailable -> {
-                    val localCanOwnThisTurn =
-                        turnMode != ChatTurnMode.APP_EXECUTION &&
-                            !activeRequest.hasImageAttachments()
-
-                    if (localCanOwnThisTurn && !hMediaPipeAgentGateway.isReady()) {
-                        hMediaPipeAgentGateway.schedulePreparation()
-                        emit(
-                            AgentModelEvent.Failed(
-                                message = "H_LOCAL_MODEL_PREPARING: local model is still being prepared"
-                            )
-                        )
-                    } else {
-                        emit(AgentModelEvent.Failed(message = terminalFailure))
-                    }
+                    emit(AgentModelEvent.Failed(message = terminalFailure))
                     return@flow
                 }
             }
@@ -366,14 +344,6 @@ class ProviderAgentGatewayRouter @Inject constructor(
     private fun isOpenRouterPlatform(platform: PlatformV2): Boolean =
         platform.compatibleType == ClientType.OPEN_ROUTER ||
             freeAiRouter.detectProvider(platform) == FreeAiRouter.Provider.OPENROUTER
-
-    private fun isLocalHPlatform(platform: PlatformV2): Boolean =
-        isAnyInternalLocalPlatform(platform) &&
-            freeAiRouter.isFreeCandidate(platform, FreeAiRouter.Provider.LOCAL)
-
-    private fun isAnyInternalLocalPlatform(platform: PlatformV2): Boolean =
-        freeAiRouter.isInternalFree(platform) &&
-            freeAiRouter.detectProvider(platform) == FreeAiRouter.Provider.LOCAL
 
     private fun isOpenAiCompatible(type: ClientType): Boolean =
         type == ClientType.OPEN_ROUTER ||
