@@ -11,6 +11,7 @@ import javax.inject.Singleton
  *
  * Provider selection is intentionally ephemeral. A transient timeout, rate limit, or
  * outage must never rewrite the user's persisted enabled-provider configuration.
+ * H has no on-device/local AI fallback; all automatic execution routes are cloud based.
  */
 @Singleton
 class FreeAiFailoverCoordinator @Inject constructor(
@@ -133,17 +134,14 @@ class FreeAiFailoverCoordinator @Inject constructor(
     private fun noRouteMessage(
         availability: FreeAiRuntimeAvailability.Snapshot,
     ): String = when {
-        !availability.networkAvailable && availability.localModelPreparing ->
-            "H_LOCAL_MODEL_PREPARING: المساعد الشخصي H المحلي لم يكتمل تنزيله بعد. اتصل بـ Wi‑Fi وسيكمل التحضير تلقائيًا."
-
-        !availability.networkAvailable && !availability.localModelAvailable ->
-            "H_OFFLINE_NOT_READY: لا يوجد إنترنت والمساعد الشخصي H المحلي غير جاهز بعد. وصّل Wi‑Fi مرة واحدة لإكمال النموذج المحلي."
+        !availability.networkAvailable ->
+            "H_CLOUD_AI_OFFLINE: يحتاج المساعد الشخصي H إلى اتصال بالإنترنت لتشغيل المعالجة الذكية."
 
         availability.openRouterCredentialMissing ->
             "H_OPENROUTER_CREDENTIAL_MISSING: تعذر استخدام OpenRouter، وسيحاول المساعد الشخصي H بقية المسارات المتاحة تلقائيًا."
 
         else ->
-            "H_NO_ROUTE: لا يوجد مسار متاح لالمساعد الشخصي H حاليًا. سيعيد المحاولة تلقائيًا عند توفر اتصال مناسب."
+            "H_NO_ROUTE: لا يوجد مسار معالجة متاح للمساعد الشخصي H حاليًا. سيعيد المحاولة تلقائيًا عند توفر مسار مناسب."
     }
 
     companion object {
