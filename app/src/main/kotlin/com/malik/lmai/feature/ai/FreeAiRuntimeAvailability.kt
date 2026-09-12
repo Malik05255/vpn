@@ -6,10 +6,11 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Runtime validation for H's hidden cloud execution routes.
+ * Runtime validation for H's hidden free cloud execution routes.
  *
- * H no longer owns or prepares any on-device/local AI model. Built-in routes require
- * validated internet; providers remain implementation details behind the single H identity.
+ * H no longer owns or prepares any on-device/local AI model. This validator is intentionally
+ * restricted to INTERNAL_FREE routes so paid/user-managed providers can never leak into the
+ * automatic free failover pool. Paid execution is selected explicitly before this layer.
  */
 @Singleton
 class FreeAiRuntimeAvailability @Inject constructor(
@@ -24,9 +25,7 @@ class FreeAiRuntimeAvailability @Inject constructor(
         val openRouterCredentialMissing: Boolean,
     ) {
         val hasUsableInternalFreeRoute: Boolean
-            get() = usablePlatforms.any { platform ->
-                AiProviderOrigin.of(platform) == AiProviderOrigin.INTERNAL_FREE
-            }
+            get() = usablePlatforms.isNotEmpty()
     }
 
     suspend fun evaluate(platforms: List<PlatformV2>): Snapshot {
@@ -35,10 +34,9 @@ class FreeAiRuntimeAvailability @Inject constructor(
 
         val usable = ArrayList<PlatformV2>(platforms.size)
         for (platform in platforms) {
-            if (!freeAiRouter.isInternalFree(platform)) {
-                usable += platform
-                continue
-            }
+            // Hard boundary: this pool is exclusively for H's automatic free-cloud routing.
+            // External/paid providers are handled explicitly by FreeAiFailoverCoordinator.
+            if (!freeAiRouter.isInternalFree(platform)) continue
 
             val provider = freeAiRouter.detectProvider(platform)
             val isUsable = when (provider) {
