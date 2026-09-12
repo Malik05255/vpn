@@ -7,7 +7,6 @@ import com.malik.lmai.feature.agent.AgentModelEvent
 import com.malik.lmai.feature.agent.AgentModelRequest
 import com.malik.lmai.feature.ai.FreeAiFailoverCoordinator
 import com.malik.lmai.feature.ai.FreeAiRouter
-import com.malik.lmai.feature.ai.HMediaPipeAgentGateway
 import com.malik.lmai.feature.ai.ProviderHealthTracker
 import com.malik.lmai.feature.ai.openrouter.OpenRouterCredentialStore
 import com.malik.lmai.feature.assistant.HAssistantContext
@@ -29,7 +28,6 @@ class ProviderAgentGatewayRouterResilienceTest {
 
     private val gateway = mockk<QwenChatCompletionsAgentGateway>()
     private val responsesGateway = mockk<OpenAiResponsesAgentGateway>()
-    private val localGateway = mockk<HMediaPipeAgentGateway>(relaxed = true)
     private val failover = mockk<FreeAiFailoverCoordinator>()
     private val freeAiRouter = FreeAiRouter()
     private val healthTracker = mockk<ProviderHealthTracker>(relaxed = true)
@@ -45,7 +43,6 @@ class ProviderAgentGatewayRouterResilienceTest {
     private val router = ProviderAgentGatewayRouter(
         gateway,
         responsesGateway,
-        localGateway,
         failover,
         freeAiRouter,
         healthTracker,
