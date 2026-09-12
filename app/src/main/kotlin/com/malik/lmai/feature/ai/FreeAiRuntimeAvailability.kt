@@ -6,25 +6,22 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Runtime validation for built-in مساعد H الرقمي routes.
+ * Runtime validation for H's hidden cloud execution routes.
  *
- * Cloud routes require validated internet. The independent MediaPipe/Qwen local
- * route requires only the verified app-private model file and works offline.
+ * H no longer owns or prepares any on-device/local AI model. Built-in routes require
+ * validated internet; providers remain implementation details behind the single H identity.
  */
 @Singleton
 class FreeAiRuntimeAvailability @Inject constructor(
     private val freeAiRouter: FreeAiRouter,
     private val openRouterCredentialStore: OpenRouterCredentialStore,
     private val networkAvailability: NetworkAvailability,
-    private val hMediaPipeAgentGateway: HMediaPipeAgentGateway,
 ) {
 
     data class Snapshot(
         val usablePlatforms: List<PlatformV2>,
         val networkAvailable: Boolean,
         val openRouterCredentialMissing: Boolean,
-        val localModelAvailable: Boolean = false,
-        val localModelPreparing: Boolean = false,
     ) {
         val hasUsableInternalFreeRoute: Boolean
             get() = usablePlatforms.any { platform ->
@@ -35,16 +32,6 @@ class FreeAiRuntimeAvailability @Inject constructor(
     suspend fun evaluate(platforms: List<PlatformV2>): Snapshot {
         val networkAvailable = networkAvailability.hasValidatedInternet()
         var openRouterCredentialMissing = false
-        val localModelAvailable = hMediaPipeAgentGateway.isReady()
-
-        // Preparing means the local model is not ready yet, regardless of whether the
-        // device happens to be online at this exact instant. The old expression tied
-        // this flag to networkAvailable, making the offline "still preparing" branch
-        // logically impossible and producing misleading cloud/quota errors instead.
-        val localModelPreparing = !localModelAvailable
-        if (localModelPreparing && networkAvailable) {
-            hMediaPipeAgentGateway.schedulePreparation()
-        }
 
         val usable = ArrayList<PlatformV2>(platforms.size)
         for (platform in platforms) {
@@ -55,9 +42,6 @@ class FreeAiRuntimeAvailability @Inject constructor(
 
             val provider = freeAiRouter.detectProvider(platform)
             val isUsable = when (provider) {
-                FreeAiRouter.Provider.LOCAL ->
-                    localModelAvailable && freeAiRouter.isFreeCandidate(platform, provider)
-
                 FreeAiRouter.Provider.OPENROUTER -> {
                     if (!networkAvailable) {
                         false
@@ -82,8 +66,6 @@ class FreeAiRuntimeAvailability @Inject constructor(
             usablePlatforms = usable,
             networkAvailable = networkAvailable,
             openRouterCredentialMissing = openRouterCredentialMissing,
-            localModelAvailable = localModelAvailable,
-            localModelPreparing = localModelPreparing,
         )
     }
 }
