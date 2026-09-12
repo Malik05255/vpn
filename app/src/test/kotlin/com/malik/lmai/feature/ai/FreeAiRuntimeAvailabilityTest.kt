@@ -5,7 +5,6 @@ import com.malik.lmai.data.model.ClientType
 import com.malik.lmai.feature.ai.openrouter.OpenRouterCredentialStore
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.verify
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -17,20 +16,14 @@ class FreeAiRuntimeAvailabilityTest {
     private val router = FreeAiRouter()
     private val credentialStore = mockk<OpenRouterCredentialStore>()
     private val networkAvailability = mockk<NetworkAvailability>()
-    private val localGateway = mockk<HMediaPipeAgentGateway>(relaxed = true)
     private val availability = FreeAiRuntimeAvailability(
         router,
         credentialStore,
         networkAvailability,
-        localGateway,
     )
 
-    init {
-        every { localGateway.isReady() } returns false
-    }
-
     @Test
-    fun `cloud routes are withheld while internet is unavailable and local is still preparing`() = runTest {
+    fun `cloud routes are withheld while internet is unavailable`() = runTest {
         val blockRun = blockRunPlatform()
         val openRouter = openRouterPlatform()
         every { networkAvailability.hasValidatedInternet() } returns false
@@ -39,29 +32,34 @@ class FreeAiRuntimeAvailabilityTest {
 
         assertTrue(snapshot.usablePlatforms.isEmpty())
         assertFalse(snapshot.networkAvailable)
-        assertFalse(snapshot.localModelAvailable)
-        assertTrue(snapshot.localModelPreparing)
+        assertFalse(snapshot.openRouterCredentialMissing)
         assertFalse(snapshot.hasUsableInternalFreeRoute)
-        verify(exactly = 0) { localGateway.schedulePreparation() }
     }
 
     @Test
-    fun `ready local route remains usable without internet`() = runTest {
-        val local = localPlatform()
-        every { localGateway.isReady() } returns true
-        every { networkAvailability.hasValidatedInternet() } returns false
+    fun `external paid route is never admitted to automatic free pool`() = runTest {
+        val external = PlatformV2(
+            name = "User Paid Gemini",
+            compatibleType = ClientType.GOOGLE_AI_STUDIO,
+            enabled = true,
+            apiUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
+            token = "paid-user-key",
+            model = "gemini-paid",
+            provider = "external:gemini",
+            isFree = false,
+        )
+        val internal = blockRunPlatform()
+        every { networkAvailability.hasValidatedInternet() } returns true
 
-        val snapshot = availability.evaluate(listOf(local))
+        val snapshot = availability.evaluate(listOf(external, internal))
 
-        assertEquals(listOf(local), snapshot.usablePlatforms)
-        assertFalse(snapshot.networkAvailable)
-        assertTrue(snapshot.localModelAvailable)
-        assertFalse(snapshot.localModelPreparing)
+        assertEquals(listOf(internal), snapshot.usablePlatforms)
+        assertTrue(snapshot.networkAvailable)
         assertTrue(snapshot.hasUsableInternalFreeRoute)
     }
 
     @Test
-    fun `BlockRun remains usable online while local preparation is scheduled`() = runTest {
+    fun `BlockRun zero key route remains usable online`() = runTest {
         val blockRun = blockRunPlatform()
         every { networkAvailability.hasValidatedInternet() } returns true
 
@@ -70,10 +68,7 @@ class FreeAiRuntimeAvailabilityTest {
         assertEquals(listOf(blockRun), snapshot.usablePlatforms)
         assertTrue(snapshot.networkAvailable)
         assertFalse(snapshot.openRouterCredentialMissing)
-        assertFalse(snapshot.localModelAvailable)
-        assertTrue(snapshot.localModelPreparing)
         assertTrue(snapshot.hasUsableInternalFreeRoute)
-        verify(exactly = 1) { localGateway.schedulePreparation() }
     }
 
     @Test
@@ -87,10 +82,11 @@ class FreeAiRuntimeAvailabilityTest {
         assertTrue(snapshot.usablePlatforms.isEmpty())
         assertTrue(snapshot.networkAvailable)
         assertTrue(snapshot.openRouterCredentialMissing)
+        assertFalse(snapshot.hasUsableInternalFreeRoute)
     }
 
     @Test
-    fun `zero-key route survives when optional OpenRouter credential is missing`() = runTest {
+    fun `zero key route survives when optional OpenRouter credential is missing`() = runTest {
         val blockRun = blockRunPlatform()
         val openRouter = openRouterPlatform()
         every { networkAvailability.hasValidatedInternet() } returns true
@@ -117,24 +113,13 @@ class FreeAiRuntimeAvailabilityTest {
         assertTrue(snapshot.hasUsableInternalFreeRoute)
     }
 
-    private fun localPlatform() = PlatformV2(
-        name = "H Local",
-        compatibleType = ClientType.CUSTOM,
-        enabled = true,
-        apiUrl = FreeAiRouter.H_LOCAL_API_URL,
-        token = null,
-        model = FreeAiBootstrapper.H_LOCAL_MODEL,
-        provider = "internal:local",
-        isFree = true,
-    )
-
     private fun blockRunPlatform() = PlatformV2(
         name = "H Code",
         compatibleType = ClientType.CUSTOM,
         enabled = true,
         apiUrl = FreeAiRouter.BLOCKRUN_API_BASE,
         token = null,
-        model = FreeAiBootstrapper.BLOCKRUN_CODE_MODEL,
+        model = "qwen/qwen3-coder:free",
         provider = "internal:blockrun",
         isFree = true,
     )
