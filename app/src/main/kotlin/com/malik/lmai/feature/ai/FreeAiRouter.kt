@@ -6,7 +6,10 @@ import javax.inject.Singleton
 
 /**
  * Legacy class name retained internally for database/API compatibility.
- * User-facing identity is "مساعد H الرقمي" / المساعد الشخصي H.
+ * User-facing identity is always "مساعد H الرقمي" / المساعد الشخصي H.
+ *
+ * Providers are hidden execution backends for H, never separate assistant identities.
+ * On-device/local AI runtimes are intentionally not supported.
  */
 @Singleton
 class FreeAiRouter @Inject constructor() {
@@ -21,9 +24,6 @@ class FreeAiRouter @Inject constructor() {
         GROQ("groq", 3),
         MISTRAL("mistral", 4),
         CLOUDFLARE("cloudflare", 5),
-        // Independent app-private MediaPipe/Qwen runtime. Cloud candidates remain
-        // preferred while online; LOCAL provides offline continuity.
-        LOCAL("local", 20),
         UNKNOWN("unknown", 99),
     }
 
@@ -81,9 +81,6 @@ class FreeAiRouter @Inject constructor() {
             "groq" in fingerprint -> Provider.GROQ
             "mistral" in fingerprint -> Provider.MISTRAL
             "cloudflare" in fingerprint || "workers.ai" in fingerprint -> Provider.CLOUDFLARE
-            "local://mediapipe" in fingerprint ||
-                "qwen2.5-0.5b" in fingerprint ||
-                "مساعد h الرقمي · محلي" in fingerprint -> Provider.LOCAL
             else -> Provider.UNKNOWN
         }
     }
@@ -105,7 +102,6 @@ class FreeAiRouter @Inject constructor() {
             "groq" -> Provider.GROQ
             "mistral", "mistralai" -> Provider.MISTRAL
             "cloudflare", "cloudflareworkersai", "workersai" -> Provider.CLOUDFLARE
-            "local", "mediapipe", "qwenlocal" -> Provider.LOCAL
             else -> null
         }
     }
@@ -116,11 +112,6 @@ class FreeAiRouter @Inject constructor() {
     ): Boolean {
         if (!isInternalFree(platform)) return false
         if (provider == Provider.UNKNOWN) return false
-
-        if (provider == Provider.LOCAL) {
-            val normalizedUrl = platform.apiUrl.trim().lowercase()
-            return normalizedUrl == H_LOCAL_API_URL
-        }
 
         if (provider == Provider.BLOCKRUN) {
             val normalizedUrl = platform.apiUrl.trim().trimEnd('/').lowercase()
@@ -133,6 +124,5 @@ class FreeAiRouter @Inject constructor() {
 
     companion object {
         const val BLOCKRUN_API_BASE = "https://blockrun.ai/api"
-        const val H_LOCAL_API_URL = "local://mediapipe"
     }
 }
