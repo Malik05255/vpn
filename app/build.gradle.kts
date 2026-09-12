@@ -154,17 +154,6 @@ dependencies {
     implementation("com.google.api-client:google-api-client-android:2.7.2")
     implementation("com.google.apis:google-api-services-drive:v3-rev20250220-2.0.0")
 
-    // Independent on-device runtime. Model weights are downloaded separately and
-    // never inflate the APK. MediaPipe's generated lite protos need protobuf 4.26.1,
-    // while the embedded Android build engine also brings the full protobuf runtime.
-    // Use one modern full runtime (which includes GeneratedMessageLite) to avoid
-    // duplicate com.google.protobuf classes without removing APIs required by the
-    // on-device build engine.
-    implementation("com.google.mediapipe:tasks-genai:0.10.33") {
-        exclude(group = "com.google.protobuf", module = "protobuf-javalite")
-    }
-    implementation("com.google.protobuf:protobuf-java:4.26.1")
-
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
     implementation("org.lsposed.hiddenapibypass:hiddenapibypass:4.3")
