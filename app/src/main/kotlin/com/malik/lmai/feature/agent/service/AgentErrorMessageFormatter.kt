@@ -15,17 +15,6 @@ object AgentErrorMessageFormatter {
         if (raw.isBlank()) return AppText.get(R.string.agent_error_generic)
         val n = raw.lowercase(Locale.US)
 
-        if (
-            hasAny(
-                n,
-                "h_local_model_not_ready",
-                "h_local_model_preparing",
-                "h_offline_not_ready",
-            )
-        ) {
-            return AppText.get(R.string.agent_local_model_preparing)
-        }
-
         if (n.contains("free-models-per-day") || n.contains("openrouter_free_tier_daily")) {
             val resetAt = extractRateLimitReset(raw)
             return if (resetAt != null) {
@@ -38,6 +27,7 @@ object AgentErrorMessageFormatter {
         return when {
             hasAny(
                 n,
+                "h_cloud_ai_offline",
                 "cloud_ai_offline",
                 "free ai uses lightweight cloud inference",
             ) -> AppText.get(R.string.agent_cloud_ai_offline)
