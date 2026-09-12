@@ -5,7 +5,7 @@ import com.malik.lmai.feature.agent.AgentModelRequest
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Ranks H routes by the current task, its size, perceived latency and learned health. */
+/** Ranks H's hidden cloud execution routes by task, latency and learned health. */
 @Singleton
 class SmartFreeAiOrchestrator @Inject constructor(
     private val freeAiRouter: FreeAiRouter,
@@ -33,9 +33,6 @@ class SmartFreeAiOrchestrator @Inject constructor(
         return freeAiRouter.orderedCandidates(platforms)
             .asSequence()
             .filterNot { it.platform.uid in excludedPlatformUids }
-            .filterNot {
-                request.tools.isNotEmpty() && it.provider == FreeAiRouter.Provider.LOCAL
-            }
             .filter {
                 !hasImageAttachments || it.provider == FreeAiRouter.Provider.OPENROUTER
             }
@@ -82,12 +79,6 @@ class SmartFreeAiOrchestrator @Inject constructor(
             providerHealthTracker.scoreAdjustment(platform.uid)
         }
 
-        // The local 500+ MiB MediaPipe runtime is continuity/offline fallback, not the
-        // normal online path. Avoid native-engine cold starts and RAM pressure online.
-        if (provider == FreeAiRouter.Provider.LOCAL) {
-            score -= LOCAL_FALLBACK_PENALTY
-        }
-
         score += modelHintAdjustment(platform.model, task.kind)
         score += codeSpeedAdjustment(platform, task)
         return score
@@ -104,7 +95,6 @@ class SmartFreeAiOrchestrator @Inject constructor(
             FreeAiRouter.Provider.MISTRAL -> 12
             FreeAiRouter.Provider.CLOUDFLARE -> 10
             FreeAiRouter.Provider.BLOCKRUN -> 4
-            FreeAiRouter.Provider.LOCAL -> 0
             else -> 0
         }
 
@@ -113,7 +103,6 @@ class SmartFreeAiOrchestrator @Inject constructor(
             FreeAiRouter.Provider.OPENROUTER -> 18
             FreeAiRouter.Provider.GROQ -> 14
             FreeAiRouter.Provider.BLOCKRUN -> 8
-            FreeAiRouter.Provider.LOCAL -> 4
             else -> 0
         }
 
@@ -123,7 +112,6 @@ class SmartFreeAiOrchestrator @Inject constructor(
             FreeAiRouter.Provider.GEMINI -> 22
             FreeAiRouter.Provider.GROQ -> 16
             FreeAiRouter.Provider.MISTRAL -> 10
-            FreeAiRouter.Provider.LOCAL -> 0
             else -> 0
         }
 
@@ -133,7 +121,6 @@ class SmartFreeAiOrchestrator @Inject constructor(
             FreeAiRouter.Provider.GEMINI -> 24
             FreeAiRouter.Provider.GROQ -> 17
             FreeAiRouter.Provider.MISTRAL -> 10
-            FreeAiRouter.Provider.LOCAL -> 0
             else -> 0
         }
 
@@ -144,7 +131,6 @@ class SmartFreeAiOrchestrator @Inject constructor(
             FreeAiRouter.Provider.GROQ -> 17
             FreeAiRouter.Provider.MISTRAL -> 12
             FreeAiRouter.Provider.CLOUDFLARE -> 4
-            FreeAiRouter.Provider.LOCAL -> 0
             else -> 0
         }
     }
@@ -210,8 +196,7 @@ class SmartFreeAiOrchestrator @Inject constructor(
             "mini" in normalized ||
             "flash" in normalized ||
             "lite" in normalized ||
-            "laguna" in normalized ||
-            "0.5b" in normalized
+            "laguna" in normalized
         ) {
             score += when (task) {
                 AiTaskKind.LIGHT_CHAT -> 8
@@ -225,8 +210,6 @@ class SmartFreeAiOrchestrator @Inject constructor(
     }
 
     companion object {
-        private const val LOCAL_FALLBACK_PENALTY = 150
-
         private val BASE_QUALITY = mapOf(
             FreeAiRouter.Provider.BLOCKRUN to 99,
             FreeAiRouter.Provider.OPENROUTER to 98,
@@ -234,7 +217,6 @@ class SmartFreeAiOrchestrator @Inject constructor(
             FreeAiRouter.Provider.GROQ to 90,
             FreeAiRouter.Provider.MISTRAL to 87,
             FreeAiRouter.Provider.CLOUDFLARE to 82,
-            FreeAiRouter.Provider.LOCAL to 20,
             FreeAiRouter.Provider.UNKNOWN to 0,
         )
     }
