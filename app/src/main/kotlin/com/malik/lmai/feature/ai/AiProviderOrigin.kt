@@ -3,12 +3,14 @@ package com.malik.lmai.feature.ai
 import com.malik.lmai.data.database.entity.PlatformV2
 
 /**
- * Separates user-managed API providers from H AI's hidden free fallback pool.
+ * Separates user-managed API providers from H's hidden cloud execution pool.
  *
  * Vendor identity and origin are different dimensions. An external Gemini API
  * and an internal/free Gemini route may coexist without sharing credentials,
  * quota, enabled state, model selection, or failure state.
  *
+ * H is the only assistant identity. Internal providers are cloud execution backends,
+ * never separate assistants. On-device/local AI providers are not supported.
  * Origin is encoded in PlatformV2.provider to avoid a Room schema migration.
  */
 enum class AiProviderOrigin {
@@ -42,12 +44,8 @@ enum class AiProviderOrigin {
                 raw.startsWith(INTERNAL_PREFIX) -> INTERNAL_FREE
                 raw.startsWith(EXTERNAL_PREFIX) -> EXTERNAL
 
-                // Local on-device inference is an internal fallback by nature.
-                baseProviderId(raw) in setOf("local", "aicore", "nano") -> INTERNAL_FREE
-
                 // Any legacy/unprefixed cloud API is treated as user-managed.
-                // This conservative rule prevents a free-tier external API from
-                // being mistaken for H AI's hidden Free AI pool.
+                // Local/on-device routes are removed by FreeAiBootstrapper migration.
                 else -> EXTERNAL
             }
         }
