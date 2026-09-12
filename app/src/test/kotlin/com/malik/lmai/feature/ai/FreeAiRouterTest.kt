@@ -60,7 +60,7 @@ class FreeAiRouterTest {
     }
 
     @Test
-    fun `legacy local route is detected but never selected`() {
+    fun `legacy local route is unknown and never selected`() {
         val local = platform(
             name = "Legacy Local",
             provider = "internal:local",
@@ -68,7 +68,7 @@ class FreeAiRouterTest {
             isFree = true,
         )
 
-        assertEquals(FreeAiRouter.Provider.LOCAL, router.detectProvider(local))
+        assertEquals(FreeAiRouter.Provider.UNKNOWN, router.detectProvider(local))
         assertTrue(router.isInternalFree(local))
         assertFalse(router.isFreeCandidate(local))
         assertTrue(router.orderedCandidates(listOf(local)).isEmpty())
