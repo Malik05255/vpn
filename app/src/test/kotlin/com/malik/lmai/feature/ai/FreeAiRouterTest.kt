@@ -60,7 +60,7 @@ class FreeAiRouterTest {
     }
 
     @Test
-    fun `legacy local route is unknown and never selected`() {
+    fun `legacy local route is unknown and rejected from internal free pool`() {
         val local = platform(
             name = "Legacy Local",
             provider = "internal:local",
@@ -69,9 +69,27 @@ class FreeAiRouterTest {
         )
 
         assertEquals(FreeAiRouter.Provider.UNKNOWN, router.detectProvider(local))
-        assertTrue(router.isInternalFree(local))
+        assertFalse(router.isInternalFree(local))
         assertFalse(router.isFreeCandidate(local))
         assertTrue(router.orderedCandidates(listOf(local)).isEmpty())
+    }
+
+    @Test
+    fun `unknown internal provider cannot spoof a supported cloud route`() {
+        val spoofedLocal = PlatformV2(
+            name = "Gemini Cloud",
+            compatibleType = ClientType.CUSTOM,
+            apiUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
+            token = "should-not-be-used",
+            model = "gemini-2.5-flash",
+            provider = "internal:local",
+            isFree = true,
+        )
+
+        assertEquals(FreeAiRouter.Provider.UNKNOWN, router.detectProvider(spoofedLocal))
+        assertFalse(router.isInternalFree(spoofedLocal))
+        assertFalse(router.isFreeCandidate(spoofedLocal))
+        assertTrue(router.orderedCandidates(listOf(spoofedLocal)).isEmpty())
     }
 
     @Test
