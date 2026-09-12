@@ -7,7 +7,6 @@ import com.malik.lmai.feature.agent.AgentModelEvent
 import com.malik.lmai.feature.agent.AgentModelRequest
 import com.malik.lmai.feature.ai.FreeAiFailoverCoordinator
 import com.malik.lmai.feature.ai.FreeAiRouter
-import com.malik.lmai.feature.ai.HMediaPipeAgentGateway
 import com.malik.lmai.feature.ai.ProviderHealthTracker
 import com.malik.lmai.feature.ai.openrouter.OpenRouterCredentialStore
 import com.malik.lmai.feature.assistant.HAssistantContext
@@ -27,7 +26,6 @@ class ProviderAgentGatewayRouterTest {
 
     private val gateway = mockk<QwenChatCompletionsAgentGateway>()
     private val responsesGateway = mockk<OpenAiResponsesAgentGateway>()
-    private val localGateway = mockk<HMediaPipeAgentGateway>(relaxed = true)
     private val failover = mockk<FreeAiFailoverCoordinator>()
     private val freeAiRouter = FreeAiRouter()
     private val healthTracker = mockk<ProviderHealthTracker>(relaxed = true)
@@ -43,7 +41,6 @@ class ProviderAgentGatewayRouterTest {
     private val router = ProviderAgentGatewayRouter(
         gateway,
         responsesGateway,
-        localGateway,
         failover,
         freeAiRouter,
         healthTracker,
@@ -66,7 +63,6 @@ class ProviderAgentGatewayRouterTest {
         assertTrue(events.single() is AgentModelEvent.Completed)
         coVerify(exactly = 0) { gateway.streamTurn(match { it.platform.uid == stale.uid }) }
         coVerify(exactly = 1) { gateway.streamTurn(match { it.platform.uid == active.uid }) }
-        coVerify(exactly = 0) { localGateway.streamTurn(any()) }
         coVerify(exactly = 0) { responsesGateway.streamTurn(any()) }
         verify(exactly = 1) { healthTracker.recordSuccess(active.uid, any()) }
     }
@@ -110,67 +106,6 @@ class ProviderAgentGatewayRouterTest {
     }
 
     @Test
-    fun `trusted H local route uses independent local gateway`() = runTest {
-        val stale = platform("Old external", "external:custom")
-        val local = PlatformV2(
-            name = "مساعد H الرقمي · محلي",
-            compatibleType = ClientType.CUSTOM,
-            enabled = true,
-            apiUrl = FreeAiRouter.H_LOCAL_API_URL,
-            token = null,
-            model = "qwen2.5-0.5b-instruct-q8",
-            provider = "internal:local",
-            isFree = true,
-        )
-
-        coEvery { failover.resolveStartPlatform(any<AgentModelRequest>()) } returns local
-        coEvery { localGateway.streamTurn(match { it.platform.uid == local.uid }) } returns
-            flowOf(
-                AgentModelEvent.OutputDelta("محلي"),
-                AgentModelEvent.Completed(finalText = "محلي"),
-            )
-
-        val events = router.streamTurn(request(stale)).toList()
-
-        assertEquals(2, events.size)
-        assertTrue(events[0] is AgentModelEvent.OutputDelta)
-        assertTrue(events[1] is AgentModelEvent.Completed)
-        coVerify(exactly = 1) { localGateway.streamTurn(match { it.platform.uid == local.uid }) }
-        coVerify(exactly = 0) { gateway.streamTurn(any()) }
-        coVerify(exactly = 0) { responsesGateway.streamTurn(any()) }
-        verify(exactly = 1) { healthTracker.recordSuccess(local.uid, any()) }
-    }
-
-    @Test
-    fun `legacy local provider is rejected instead of invoking local inference`() = runTest {
-        val stale = platform("Old external", "external:custom")
-        val legacyLocal = platform(
-            name = "Legacy Local",
-            provider = "internal:local",
-            token = null,
-        )
-
-        // This test isolates legacy-route rejection from the separate local-model
-        // preparation fallback. A ready local runtime means the terminal message should
-        // remain the unsupported legacy route error.
-        every { localGateway.isReady() } returns true
-        coEvery { failover.resolveStartPlatform(any<AgentModelRequest>()) } returns legacyLocal
-        coEvery {
-            failover.handleFailure(legacyLocal.uid, any(), any())
-        } returns FreeAiFailoverCoordinator.Result.NoFallbackAvailable
-
-        val events = router.streamTurn(request(stale)).toList()
-
-        assertEquals(1, events.size)
-        val failed = events.single() as AgentModelEvent.Failed
-        assertTrue(failed.message.contains("غير مدعوم"))
-        coVerify(exactly = 0) { gateway.streamTurn(any()) }
-        coVerify(exactly = 0) { responsesGateway.streamTurn(any()) }
-        coVerify(exactly = 0) { localGateway.streamTurn(any()) }
-        verify(exactly = 1) { healthTracker.recordFailure(legacyLocal.uid) }
-    }
-
-    @Test
     fun `disabled stale external provider is never retried when no route is available`() = runTest {
         val staleExternal = platform("Old external Gemini", "external:gemini")
 
@@ -184,16 +119,15 @@ class ProviderAgentGatewayRouterTest {
         assertTrue(failed.message.contains("No active AI provider"))
         coVerify(exactly = 0) { gateway.streamTurn(any()) }
         coVerify(exactly = 0) { responsesGateway.streamTurn(any()) }
-        coVerify(exactly = 0) { localGateway.streamTurn(any()) }
         coVerify(exactly = 0) {
             failover.handleFailure(any(), any(), any())
         }
     }
 
     @Test
-    fun `immediate external rate limit switches inside same model turn`() = runTest {
-        val primary = platform("Primary", "external:custom")
-        val fallback = platform("Hidden Gemini", "internal:gemini")
+    fun `internal free rate limit switches inside same model turn`() = runTest {
+        val primary = platform("Hidden Gemini", "internal:gemini")
+        val fallback = platform("Hidden Groq", "internal:groq")
 
         coEvery { failover.resolveStartPlatform(any<AgentModelRequest>()) } returns primary
         coEvery { gateway.streamTurn(match { it.platform.uid == primary.uid }) } returns
@@ -208,7 +142,7 @@ class ProviderAgentGatewayRouterTest {
         } returns FreeAiFailoverCoordinator.Result.Switched(
             fromPlatformUid = primary.uid,
             toPlatform = fallback,
-            activatedFreeAi = true,
+            activatedFreeAi = false,
         )
 
         val events = router.streamTurn(request(primary)).toList()
@@ -227,8 +161,8 @@ class ProviderAgentGatewayRouterTest {
     }
 
     @Test
-    fun `provider exception before output switches to hidden fallback`() = runTest {
-        val primary = platform("Primary", "external:custom")
+    fun `internal provider exception before output switches to hidden fallback`() = runTest {
+        val primary = platform("Hidden Gemini", "internal:gemini")
         val fallback = platform("Hidden Groq", "internal:groq")
 
         coEvery { failover.resolveStartPlatform(any<AgentModelRequest>()) } returns primary
@@ -241,7 +175,7 @@ class ProviderAgentGatewayRouterTest {
         } returns FreeAiFailoverCoordinator.Result.Switched(
             fromPlatformUid = primary.uid,
             toPlatform = fallback,
-            activatedFreeAi = true,
+            activatedFreeAi = false,
         )
 
         val events = router.streamTurn(request(primary)).toList()
@@ -256,8 +190,29 @@ class ProviderAgentGatewayRouterTest {
     }
 
     @Test
+    fun `paid external failure surfaces without free fallback`() = runTest {
+        val paid = platform("Paid private API", "external:custom")
+
+        coEvery { failover.resolveStartPlatform(any<AgentModelRequest>()) } returns paid
+        coEvery { gateway.streamTurn(match { it.platform.uid == paid.uid }) } returns
+            flowOf(AgentModelEvent.Failed("paid provider unavailable"))
+        coEvery {
+            failover.handleFailure(paid.uid, any(), any())
+        } returns FreeAiFailoverCoordinator.Result.NoFallbackAvailable
+
+        val events = router.streamTurn(request(paid)).toList()
+
+        assertEquals(1, events.size)
+        val failed = events.single() as AgentModelEvent.Failed
+        assertEquals("paid provider unavailable", failed.message)
+        coVerify(exactly = 1) { gateway.streamTurn(match { it.platform.uid == paid.uid }) }
+        coVerify(exactly = 1) { failover.handleFailure(paid.uid, any(), any()) }
+        coVerify(exactly = 0) { responsesGateway.streamTurn(any()) }
+    }
+
+    @Test
     fun `partial output failure is surfaced without switching providers`() = runTest {
-        val primary = platform("Primary", "external:custom")
+        val primary = platform("Primary", "internal:gemini")
 
         coEvery { failover.resolveStartPlatform(any<AgentModelRequest>()) } returns primary
         coEvery { gateway.streamTurn(any()) } returns
@@ -279,13 +234,9 @@ class ProviderAgentGatewayRouterTest {
     }
 
     @Test
-    fun `no fallback surfaces original provider failure when local runtime is already ready`() = runTest {
-        val primary = platform("Primary", "external:custom")
+    fun `no fallback surfaces original provider failure`() = runTest {
+        val primary = platform("Hidden Gemini", "internal:gemini")
 
-        // When local is not ready, the router intentionally surfaces preparation state
-        // instead of a misleading cloud/provider error. Mark it ready here to isolate
-        // the original no-fallback provider behavior.
-        every { localGateway.isReady() } returns true
         coEvery { failover.resolveStartPlatform(any<AgentModelRequest>()) } returns primary
         coEvery { gateway.streamTurn(any()) } returns
             flowOf(AgentModelEvent.Failed("provider unavailable"))
@@ -316,13 +267,9 @@ class ProviderAgentGatewayRouterTest {
     ) = PlatformV2(
         name = name,
         compatibleType = ClientType.CUSTOM,
-        apiUrl = if (provider == "internal:local") {
-            "local://legacy"
-        } else {
-            "https://example.test/v1"
-        },
+        apiUrl = "https://example.test/v1",
         token = token,
-        model = if (provider == "internal:local") "legacy-local" else "model",
+        model = "model",
         provider = provider,
         isFree = provider.startsWith("internal:"),
     )
