@@ -57,14 +57,33 @@ class FreeAiRouter @Inject constructor() {
         return candidates.getOrNull(currentIndex + 1)?.platform
     }
 
+    /**
+     * Only a recognized, explicitly internal cloud backend belongs to H's free pool.
+     * Unknown internal ids (including legacy internal:local) are rejected at the boundary
+     * instead of being allowed to inherit INTERNAL_FREE status from their prefix alone.
+     */
     fun isInternalFree(platform: PlatformV2): Boolean =
-        AiProviderOrigin.of(platform) == AiProviderOrigin.INTERNAL_FREE
+        AiProviderOrigin.of(platform) == AiProviderOrigin.INTERNAL_FREE &&
+            detectProvider(platform) != Provider.UNKNOWN
 
     fun isExternal(platform: PlatformV2): Boolean =
         AiProviderOrigin.of(platform) == AiProviderOrigin.EXTERNAL
 
     fun detectProvider(platform: PlatformV2): Provider {
-        explicitProvider(AiProviderOrigin.baseProviderId(platform.provider))?.let { return it }
+        val rawProvider = platform.provider?.trim()?.lowercase().orEmpty()
+        val providerId = AiProviderOrigin.baseProviderId(platform.provider)
+        explicitProvider(providerId)?.let { return it }
+
+        // A namespaced provider id is an explicit trust boundary. If it is unknown,
+        // do not infer a different provider from a misleading name, URL, or model.
+        // This permanently blocks legacy internal:local/on-device routes from being
+        // reclassified as a supported cloud route by fingerprinting.
+        if (
+            rawProvider.startsWith(INTERNAL_PROVIDER_PREFIX) ||
+            rawProvider.startsWith(EXTERNAL_PROVIDER_PREFIX)
+        ) {
+            return Provider.UNKNOWN
+        }
 
         val fingerprint = buildString {
             append(platform.name)
@@ -124,5 +143,7 @@ class FreeAiRouter @Inject constructor() {
 
     companion object {
         const val BLOCKRUN_API_BASE = "https://blockrun.ai/api"
+        private const val INTERNAL_PROVIDER_PREFIX = "internal:"
+        private const val EXTERNAL_PROVIDER_PREFIX = "external:"
     }
 }
