@@ -12,6 +12,10 @@ import javax.inject.Singleton
  * Provider selection is intentionally ephemeral. A transient timeout, rate limit, or
  * outage must never rewrite the user's persisted enabled-provider configuration.
  * H has no on-device/local AI fallback; all automatic execution routes are cloud based.
+ *
+ * Free and paid execution are strict, isolated modes. If a user-managed external provider
+ * is explicitly enabled, H uses only that provider and never falls back into the automatic
+ * free pool after a failure.
  */
 @Singleton
 class FreeAiFailoverCoordinator @Inject constructor(
@@ -38,10 +42,8 @@ class FreeAiFailoverCoordinator @Inject constructor(
     suspend fun resolveStartPlatform(request: AgentModelRequest): PlatformV2 {
         val platforms = freeAiBootstrapper.ensureReady()
 
-        // An explicitly enabled user-managed API remains the user's first choice.
-        platforms.firstOrNull { platform ->
-            platform.enabled && freeAiRouter.isExternal(platform)
-        }?.let { return it }
+        // Explicit paid/user-managed mode is exclusive: H uses only this route.
+        explicitlyEnabledExternal(platforms)?.let { return it }
 
         val availability = runtimeAvailability.evaluate(platforms)
         return smartOrchestrator.selectBest(
@@ -54,9 +56,8 @@ class FreeAiFailoverCoordinator @Inject constructor(
     suspend fun resolveStartPlatform(requestedPlatform: PlatformV2): PlatformV2 {
         val platforms = freeAiBootstrapper.ensureReady()
 
-        platforms.firstOrNull { platform ->
-            platform.enabled && freeAiRouter.isExternal(platform)
-        }?.let { return it }
+        // Explicit paid/user-managed mode is exclusive: H uses only this route.
+        explicitlyEnabledExternal(platforms)?.let { return it }
 
         val availability = runtimeAvailability.evaluate(platforms)
         val usablePlatforms = availability.usablePlatforms
@@ -85,6 +86,14 @@ class FreeAiFailoverCoordinator @Inject constructor(
         }
 
         val platforms = freeAiBootstrapper.ensureReady()
+
+        // Paid/user-managed mode is a hard routing boundary. Never mix it with the free pool,
+        // even after timeout, quota, auth, or provider errors. The caller may surface the
+        // provider failure, but it must not silently execute the turn on a different backend.
+        if (explicitlyEnabledExternal(platforms) != null) {
+            return Result.NoFallbackAvailable
+        }
+
         val availability = runtimeAvailability.evaluate(platforms)
         val usablePlatforms = availability.usablePlatforms
         val failedPlatform = platforms.firstOrNull { it.uid == failedPlatformUid }
@@ -130,6 +139,11 @@ class FreeAiFailoverCoordinator @Inject constructor(
             activatedFreeAi = false,
         )
     }
+
+    private fun explicitlyEnabledExternal(platforms: List<PlatformV2>): PlatformV2? =
+        platforms.firstOrNull { platform ->
+            platform.enabled && freeAiRouter.isExternal(platform)
+        }
 
     private fun noRouteMessage(
         availability: FreeAiRuntimeAvailability.Snapshot,
