@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="free_ai_cloud_ready">H is ready. Once the local model is prepared, ordinary chat runs on-device first; connected routes remain available for stronger technical work.</string>
-    <string name="free_ai_cloud_connect">Connect OpenRouter Free once to add an optional connected AI route.</string>
-    <string name="free_ai_waiting_for_network">Waiting for a connection to finish preparing H\'s local model. After the one-time download, ordinary chat can run on-device.</string>
+    <string name="free_ai_cloud_ready">H is ready and uses cloud AI routes only. It automatically chooses the best available route for each request.</string>
+    <string name="free_ai_cloud_connect">H is ready on its built-in cloud routes. OpenRouter Free is optional and can add another cloud route.</string>
+    <string name="free_ai_waiting_for_network">H is cloud-only and needs an internet connection to respond. No on-device AI model is used.</string>
     <string name="openrouter_oauth_error">Connection failed: %1$s</string>
-    <string name="agent_cloud_ai_offline">H\'s local model is not ready yet. Connect once so the one-time local-model download can finish.</string>
-    <string name="agent_cloud_ai_not_connected">The connected AI route is unavailable. H will use the local model when it is ready.</string>
-    <string name="agent_openrouter_credential_missing">The optional OpenRouter Free connection is no longer valid. H will use another available route.</string>
-    <string name="agent_local_model_preparing">H\'s local model is still preparing. Ordinary chat will run on-device as soon as the one-time download finishes.</string>
+    <string name="agent_cloud_ai_offline">H is cloud-only and needs an internet connection to respond.</string>
+    <string name="agent_cloud_ai_not_connected">No cloud AI route is currently available for H. Check the connection and try again.</string>
+    <string name="agent_openrouter_credential_missing">The optional OpenRouter Free connection is no longer valid. H will use another available cloud route.</string>
+    <string name="agent_local_model_preparing">H no longer uses an on-device AI model. Connect to the internet so H can use its cloud routes.</string>
 </resources>
