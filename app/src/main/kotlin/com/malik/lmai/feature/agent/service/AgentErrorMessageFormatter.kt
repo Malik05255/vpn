@@ -40,6 +40,7 @@ object AgentErrorMessageFormatter {
 
             hasAny(
                 n,
+                "h_openrouter_credential_missing",
                 "openrouter_oauth_credential_missing",
                 "openrouter free is configured but its oauth credential is unavailable",
             ) -> AppText.get(R.string.agent_openrouter_credential_missing)
