@@ -34,6 +34,7 @@ object AgentErrorMessageFormatter {
 
             hasAny(
                 n,
+                "h_no_route",
                 "cloud_ai_not_connected",
                 "connect openrouter free in settings",
             ) -> AppText.get(R.string.agent_cloud_ai_not_connected)
