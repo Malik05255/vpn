@@ -21,7 +21,10 @@ class FreeAiBootstrapperTest {
     @Test
     fun `fresh install provisions cloud routes without choosing a runtime provider`() = runTest {
         var platforms = emptyList<PlatformV2>()
-        wireMutableRepository { platforms } { platforms = it }
+        wireMutableRepository(
+            read = { platforms },
+            write = { platforms = it },
+        )
 
         val result = bootstrapper.ensureReady()
 
@@ -50,7 +53,10 @@ class FreeAiBootstrapperTest {
         val local = legacyLocalPlatform()
         val openRouter = openRouterPlatform(enabled = false)
         var platforms = listOf(local, openRouter)
-        wireMutableRepository { platforms } { platforms = it }
+        wireMutableRepository(
+            read = { platforms },
+            write = { platforms = it },
+        )
 
         val result = bootstrapper.ensureReady()
 
@@ -81,7 +87,10 @@ class FreeAiBootstrapperTest {
         )
         val openRouter = openRouterPlatform(enabled = true)
         var platforms = listOf(external, openRouter)
-        wireMutableRepository { platforms } { platforms = it }
+        wireMutableRepository(
+            read = { platforms },
+            write = { platforms = it },
+        )
 
         val result = bootstrapper.ensureReady()
 
