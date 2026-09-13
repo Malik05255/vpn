@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="free_ai_title">Hassan Digital Assistant</string>
-    <string name="free_ai_description">Works automatically without exposing internal providers.</string>
+    <string name="free_ai_title">H Digital Assistant</string>
+    <string name="free_ai_description">H works automatically while internal cloud execution providers stay hidden.</string>
     <string name="free_ai_ready">Ready</string>
-    <string name="free_ai_needs_sources">Ready with the on-device fallback when supported.</string>
-    <string name="free_ai_standby_custom">Standby while your API provider is active</string>
-    <string name="free_ai_local_ready">Ready • on-device AI is the zero-key fallback when supported</string>
+    <string name="free_ai_needs_sources">Ready with cloud routes only; an internet connection is required.</string>
+    <string name="free_ai_standby_custom">H is using your selected API provider exclusively.</string>
+    <string name="free_ai_local_ready">Ready • cloud AI routes only</string>
     <string name="ai_execution_mode_title">Execution mode</string>
     <string name="ai_execution_mode_description">Automatic continues through supported repair steps. Manual keeps control with you.</string>
     <string name="ai_execution_automatic">Automatic</string>
     <string name="ai_execution_manual">Manual</string>
-    <string name="free_ai_sources_hint">The assistant manages its internal routes automatically.</string>
+    <string name="free_ai_sources_hint">H manages its hidden cloud execution routes automatically.</string>
 </resources>
