@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="free_ai_cloud_ready">المساعد الشخصي H جاهز. بعد اكتمال تجهيز النموذج المحلي تعمل المحادثات العادية على الجهاز أولًا، وتبقى المسارات المتصلة متاحة للمهام التقنية الأقوى.</string>
-    <string name="free_ai_cloud_connect">اربط OpenRouter Free مرة واحدة لإضافة مسار ذكاء اصطناعي متصل اختياري.</string>
-    <string name="free_ai_waiting_for_network">بانتظار اتصال لإكمال تجهيز نموذج المساعد الشخصي H المحلي. بعد التنزيل لمرة واحدة يمكن للمحادثات العادية العمل على الجهاز.</string>
+    <string name="free_ai_cloud_ready">المساعد الشخصي H جاهز ويستخدم مسارات الذكاء الاصطناعي السحابية فقط، ويختار تلقائيًا أفضل مسار متاح لكل طلب.</string>
+    <string name="free_ai_cloud_connect">المساعد الشخصي H جاهز عبر مساراته السحابية المدمجة. ربط OpenRouter Free اختياري لإضافة مسار سحابي آخر.</string>
+    <string name="free_ai_waiting_for_network">المساعد الشخصي H يعمل سحابيًا فقط ويحتاج اتصالًا بالإنترنت للرد. لا يتم استخدام أي نموذج ذكاء اصطناعي على الجهاز.</string>
     <string name="openrouter_oauth_error">فشل الاتصال: %1$s</string>
-    <string name="agent_cloud_ai_offline">نموذج المساعد الشخصي H المحلي غير جاهز بعد. اتصل بالإنترنت مرة واحدة حتى يكتمل تنزيل النموذج المحلي.</string>
-    <string name="agent_cloud_ai_not_connected">المسار المتصل غير متاح. سيستخدم المساعد الشخصي H النموذج المحلي عند اكتمال تجهيزه.</string>
-    <string name="agent_openrouter_credential_missing">اتصال OpenRouter Free الاختياري لم يعد صالحًا. سيستخدم المساعد الشخصي H مسارًا آخر متاحًا.</string>
-    <string name="agent_local_model_preparing">نموذج المساعد الشخصي H المحلي ما زال قيد التجهيز. ستعمل المحادثات العادية على الجهاز فور اكتمال التنزيل لمرة واحدة.</string>
+    <string name="agent_cloud_ai_offline">المساعد الشخصي H يعمل سحابيًا فقط ويحتاج اتصالًا بالإنترنت للرد.</string>
+    <string name="agent_cloud_ai_not_connected">لا يوجد مسار ذكاء اصطناعي سحابي متاح للمساعد الشخصي H حاليًا. تحقق من الاتصال ثم أعد المحاولة.</string>
+    <string name="agent_openrouter_credential_missing">اتصال OpenRouter Free الاختياري لم يعد صالحًا. سيستخدم المساعد الشخصي H مسارًا سحابيًا آخر متاحًا.</string>
+    <string name="agent_local_model_preparing">لم يعد المساعد الشخصي H يستخدم نموذج ذكاء اصطناعي على الجهاز. اتصل بالإنترنت ليستخدم H مساراته السحابية.</string>
 </resources>
