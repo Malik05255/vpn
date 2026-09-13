@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="free_ai_title">مساعد حسان الرقمي</string>
-    <string name="free_ai_description">يعمل تلقائيًا دون إظهار المزودات الداخلية للمستخدم.</string>
+    <string name="free_ai_title">المساعد الشخصي H</string>
+    <string name="free_ai_description">يعمل H تلقائيًا مع إبقاء مزودات التنفيذ السحابية الداخلية مخفية عن المستخدم.</string>
     <string name="free_ai_ready">جاهز</string>
-    <string name="free_ai_needs_sources">جاهز باستخدام الذكاء المحلي كخيار أساسي عند دعم الجهاز.</string>
-    <string name="free_ai_standby_custom">وضع الاستعداد أثناء تشغيل مزود API الخاص بك</string>
-    <string name="free_ai_local_ready">جاهز • الذكاء المحلي هو الخيار المجاني بدون مفتاح API عند دعم الجهاز</string>
+    <string name="free_ai_needs_sources">جاهز عبر المسارات السحابية فقط، ويتطلب اتصالًا بالإنترنت.</string>
+    <string name="free_ai_standby_custom">المساعد الشخصي H يستخدم مزود API الذي اخترته فقط.</string>
+    <string name="free_ai_local_ready">جاهز • مسارات ذكاء اصطناعي سحابية فقط</string>
     <string name="ai_execution_mode_title">وضع التنفيذ</string>
     <string name="ai_execution_mode_description">التلقائي يكمل خطوات الإصلاح المدعومة، واليدوي يبقي التحكم بيدك.</string>
     <string name="ai_execution_automatic">تلقائي</string>
     <string name="ai_execution_manual">يدوي</string>
-    <string name="free_ai_sources_hint">يدير المساعد مساراته الداخلية تلقائيًا.</string>
+    <string name="free_ai_sources_hint">يدير H مسارات التنفيذ السحابية المخفية تلقائيًا.</string>
 </resources>
